@@ -1,0 +1,23 @@
+name: VoiceOSConnect
+options:
+  bundleIdPrefix: com.voiceos
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  VoiceOSConnect:
+    type: application
+    platform: iOS
+    sources:
+      - VoiceOSConnect
+    settings:
+      base:
+        INFOPLIST_FILE: VoiceOSConnect/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.voiceos.connect
+        PRODUCT_NAME: VoiceOSConnect
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: false
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "1.0"

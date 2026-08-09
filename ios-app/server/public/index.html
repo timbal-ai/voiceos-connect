@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VoiceOS Connect — Remote Viewer</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #131826;
+    --border: #232b3d;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --accent: #4f7cff;
+    --green: #3ddc84;
+    --red: #ff5c5c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; font-weight: 600; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 12px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+  .dot.on { background: var(--green); }
+  .spacer { flex: 1; }
+  .urlbar {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+    max-width: 520px;
+  }
+  .urlbar input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    outline: none;
+  }
+  .urlbar input:focus { border-color: var(--accent); }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.ghost {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    min-height: 0;
+  }
+  #screen-wrap {
+    position: relative;
+    height: 100%;
+    max-width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #screen {
+    max-height: 100%;
+    max-width: 100%;
+    border-radius: 24px;
+    border: 3px solid var(--border);
+    background: #000;
+    cursor: crosshair;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  #placeholder {
+    color: var(--muted);
+    text-align: center;
+    font-size: 14px;
+    line-height: 1.8;
+  }
+  #placeholder .big { font-size: 40px; }
+  footer {
+    padding: 8px 20px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    display: flex;
+    gap: 24px;
+  }
+  kbd {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 11px;
+  }
+  /* Instant local feedback: the phone takes ~350ms to react, so confirm the
+     click immediately rather than leaving the user wondering. */
+  .ripple {
+    position: absolute;
+    width: 34px;
+    height: 34px;
+    margin: -17px 0 0 -17px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    pointer-events: none;
+    animation: ripple 450ms ease-out forwards;
+  }
+  @keyframes ripple {
+    from { transform: scale(0.4); opacity: 0.9; }
+    to   { transform: scale(1.6); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>VoiceOS Connect</h1>
+  <span class="badge"><span id="server-dot" class="dot"></span>Server</span>
+  <span class="badge"><span id="phone-dot" class="dot"></span>Phone</span>
+  <span class="badge" id="fps">0 fps</span>
+  <span class="badge" id="server-ip" title="Enter this IP in the iOS app">IP: —</span>
+  <span class="badge" id="server-ip" title="Enter this IP in the iOS app" style="display:none">IP: —</span>
+  <div class="spacer"></div>
+  <button id="home" title="Home">&#9679; Home</button>
+  <button id="switcher" class="ghost" title="App Switcher">&#9723; Apps</button>
+</header>
+<main>
+  <div id="screen-wrap">
+    <img id="screen" style="display:none" alt="Phone screen" draggable="false" />
+    <div id="placeholder">
+      <div class="big">&#128241;</div>
+      Waiting for the iPhone…<br/>
+      Keep the phone <b>unlocked and plugged in over USB</b>.<br/>
+      Full-screen mirroring starts automatically; controls activate once WebDriverAgent is ready.
+    </div>
+  </div>
+</main>
+<footer>
+  <span>Click = tap</span>
+  <span>Click &amp; drag = swipe</span>
+  <span>Scroll wheel = scroll</span>
+  <span>Type = keyboard (focus a text field on the phone first)</span>
+  <span><kbd>Enter</kbd> / <kbd>Backspace</kbd> supported</span>
+</footer>
+
+<script>
+const img = document.getElementById("screen");
+const placeholder = document.getElementById("placeholder");
+const serverDot = document.getElementById("server-dot");
+const phoneDot = document.getElementById("phone-dot");
+const fpsEl = document.getElementById("fps");
+
+let ws = null;
+let frameTimes = [];
+let currentUrl = null;
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/?role=viewer`);
+  ws.binaryType = "blob";
+
+  ws.onopen = () => { serverDot.classList.add("on"); };
+  ws.onclose = () => {
+    serverDot.classList.remove("on");
+    phoneDot.classList.remove("on");
+    setTimeout(connect, 1500);
+  };
+
+  ws.onmessage = (ev) => {
+    if (ev.data instanceof Blob) {
+      const url = URL.createObjectURL(ev.data);
+      img.onload = () => { if (currentUrl) URL.revokeObjectURL(currentUrl); currentUrl = url; };
+      img.src = url;
+      img.style.display = "block";
+      placeholder.style.display = "none";
+      const now = performance.now();
+      frameTimes.push(now);
+      frameTimes = frameTimes.filter((t) => now - t < 2000);
+      fpsEl.textContent = (frameTimes.length / 2).toFixed(1) + " fps";
+    } else {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "status") {
+          phoneDot.classList.toggle("on", msg.phoneConnected);
+          phoneDot.parentElement.lastChild.textContent =
+            msg.phoneConnected ? "Phone (USB)" : "Phone";
+          controlsEnabled = !!msg.wdaReady;
+          document.getElementById("home").disabled = !controlsEnabled;
+          document.getElementById("switcher").disabled = !controlsEnabled;
+          if (!msg.phoneConnected) {
+            img.style.display = "none";
+            placeholder.style.display = "block";
+          }
+        }
+      } catch {}
+    }
+  };
+}
+connect();
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// Map a mouse event to normalized (0..1) coordinates on the phone image
+function norm(ev) {
+  const r = img.getBoundingClientRect();
+  return {
+    x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)),
+    y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)),
+  };
+}
+
+let controlsEnabled = false;
+
+function showRipple(ev) {
+  const wrap = document.getElementById("screen-wrap");
+  const r = wrap.getBoundingClientRect();
+  const dot = document.createElement("div");
+  dot.className = "ripple";
+  dot.style.left = `${ev.clientX - r.left}px`;
+  dot.style.top = `${ev.clientY - r.top}px`;
+  wrap.appendChild(dot);
+  setTimeout(() => dot.remove(), 450);
+}
+
+// Click = tap, click-and-drag = swipe. We decide which on mouseup based on distance.
+let dragStart = null;
+img.addEventListener("mousedown", (ev) => {
+  if (!controlsEnabled) return;
+  dragStart = { ...norm(ev), t: performance.now() };
+});
+img.addEventListener("mouseup", (ev) => {
+  if (!controlsEnabled || !dragStart) return;
+  const end = norm(ev);
+  const dist = Math.hypot(end.x - dragStart.x, end.y - dragStart.y);
+  if (dist < 0.02) {
+    showRipple(ev);
+    send({ type: "tap", x: end.x, y: end.y });
+  } else {
+    const dur = Math.min(0.6, Math.max(0.1, (performance.now() - dragStart.t) / 1000));
+    send({ type: "swipe", fromX: dragStart.x, fromY: dragStart.y, toX: end.x, toY: end.y, duration: dur });
+  }
+  dragStart = null;
+});
+
+// Wheel events fire far faster than the phone can execute gestures, so batch
+// them and send one combined scroll per window instead of flooding the queue.
+let wheelAccum = { dx: 0, dy: 0 };
+let wheelTimer = null;
+img.addEventListener("wheel", (ev) => {
+  if (!controlsEnabled) return;
+  ev.preventDefault();
+  wheelAccum.dx += ev.deltaX;
+  wheelAccum.dy += ev.deltaY;
+  if (!wheelTimer) {
+    wheelTimer = setTimeout(() => {
+      const { dx, dy } = wheelAccum;
+      wheelAccum = { dx: 0, dy: 0 };
+      wheelTimer = null;
+      if (dx || dy) send({ type: "scroll", dx, dy });
+    }, 90);
+  }
+}, { passive: false });
+
+// Each WDA call costs ~300ms, so sending one per keystroke makes typing crawl.
+// Buffer characters briefly and ship them as a single string instead.
+let textBuffer = "";
+let textTimer = null;
+
+function flushText() {
+  clearTimeout(textTimer);
+  textTimer = null;
+  if (textBuffer) {
+    send({ type: "text", text: textBuffer });
+    textBuffer = "";
+  }
+}
+
+document.addEventListener("keydown", (ev) => {
+  if (!controlsEnabled) return;
+  if (ev.key === "Backspace") {
+    ev.preventDefault();
+    flushText();
+    send({ type: "key", key: "backspace" });
+  } else if (ev.key === "Enter") {
+    ev.preventDefault();
+    flushText();
+    send({ type: "key", key: "enter" });
+  } else if (ev.key.length === 1 && !ev.metaKey && !ev.ctrlKey) {
+    ev.preventDefault();
+    textBuffer += ev.key;
+    if (!textTimer) textTimer = setTimeout(flushText, 70);
+  }
+});
+
+document.getElementById("home").addEventListener("click", () => send({ type: "button", name: "home" }));
+document.getElementById("switcher").addEventListener("click", () => send({ type: "appswitcher" }));
+</script>
+</body>
+</html>
