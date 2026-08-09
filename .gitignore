@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 *.xcuserstate
 xcuserdata/
+.voiceos_token
