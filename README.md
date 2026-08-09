@@ -18,9 +18,10 @@ and the demo script.
 1. ✅ Mac agent loop driving macOS, hardcoded/typed text commands — no phone.
 2. ✅ WS gateway (`mac/gateway.py`): pairing QR, Deepgram STT, agent wiring,
    `--mock` mode for iOS dev. iPhone A app itself lives in `ios/` (WIP).
-3. 🟡 Screen streaming to iPhone A — placeholder ships with the gateway
-   (screencapture at ~4 fps during tasks); ScreenCaptureKit helper for
-   10–15 fps still to do.
+3. ✅ Screen streaming to iPhone A — ScreenCaptureKit Swift helper
+   (`sck_streamer.swift`, compiled on first use) at 12 fps, verified at
+   13.4 fps real capture. Falls back to ~4 fps screencapture if swiftc or
+   the permission is missing. `--rect` crop support ready for phone mode.
 4. ⬜ Phone mode: iPhone Mirroring window detection, crop, Cmd+1/2/3, hints.
 5. ✅ ElevenLabs TTS narration (streamed 16 kHz PCM behind each `say` frame,
    `eleven_flash_v2_5`) + voice list for the onboarding picker. Mock mode

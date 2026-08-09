@@ -275,6 +275,24 @@ class Session:
     async def _stream_screens(self):
         from agent import screen
 
+        if not self.mock:
+            # Preferred path: ScreenCaptureKit helper at 10-15 fps.
+            try:
+                from agent.sck import SCKStream
+
+                stream = SCKStream(fps=config.STREAM_FPS)
+                await stream.start()
+                try:
+                    async for jpeg, w, h in stream.frames():
+                        self.emit_video(jpeg, w, h)
+                finally:
+                    await stream.stop()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"SCK streamer unavailable ({e}); falling back to screencapture")
+
         while True:
             try:
                 if self.mock:
