@@ -430,7 +430,14 @@ class Session:
         else:
             from agent import mirroring
 
-            rect = await self.loop.run_in_executor(None, mirroring.connect)
+            def connect_and_snap():
+                mirroring.connect()
+                try:
+                    return mirroring.snap_under_notch() or mirroring.find_window()
+                except Exception:
+                    return mirroring.find_window()  # snap is cosmetic, never fatal
+
+            rect = await self.loop.run_in_executor(None, connect_and_snap)
             self.viewport = tuple(rect)
         await asyncio.sleep(2.0)  # let the stream show the phone waking up
         return "Connected. I can see your phone - what should I do on it?"

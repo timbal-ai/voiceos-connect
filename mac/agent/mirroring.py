@@ -41,6 +41,23 @@ def is_alive() -> bool:
     return find_window() is not None
 
 
+def snap_under_notch():
+    """Move the mirroring window to top-center, hugging the menu bar — the
+    'notch expands into a live phone' stage effect. Returns the new rect.
+    Needs Accessibility + Automation (System Events) permission."""
+    rect = find_window()
+    if rect is None:
+        return None
+    import pyautogui
+
+    screen_w, _ = pyautogui.size()
+    x = int((screen_w - rect[2]) / 2)
+    script = (f'tell application "System Events" to tell process "{APP_NAME}" '
+              f"to set position of window 1 to {{{x}, 25}}")
+    subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+    return find_window()
+
+
 def connect(timeout: float = 20.0):
     """Launch/focus iPhone Mirroring and return the window rect.
 

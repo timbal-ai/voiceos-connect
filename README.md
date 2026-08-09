@@ -8,10 +8,15 @@ and the demo script.
 
 ## Layout
 
-- `mac/` — Python agent host. Milestone 1 is done: a Claude computer-use loop
-  that drives the real macOS desktop from typed text commands.
-- `ios/` — (upcoming) SwiftUI app for iPhone A: PTT mic, live transcript,
-  streamed screen view. TestFlight distribution.
+- `mac/` — Python agent host: computer-use loop, WS gateway, STT/TTS,
+  phone mode, cloud agent.
+- `integration/` — **VoiceOS notch integration**: speak a phone task into the
+  notch, the iPhone Mirroring window snaps to top-center under the notch (the
+  "notch grows a live phone" effect) and the agent operates it. Install in
+  VoiceOS: Settings → Agent Mode → Integrations → Install from folder →
+  pick `integration/`. Needs the `mac/` venv set up first; `bun verify.ts`
+  inside the folder must pass.
+- `ios-app/` — iPhone app + WDA full-device rig (Isaac).
 
 ## Milestone status (weekend build order)
 

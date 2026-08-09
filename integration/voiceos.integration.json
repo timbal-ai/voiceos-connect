@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "ai.timbal.voiceos-phone",
+  "version": "1.0.0",
+  "name": "Phone",
+  "summary": "Speak a phone task into the notch: the notch grows a live iPhone and the agent taps, swipes, and types for you.",
+  "publisher": {
+    "id": "pub_timbal",
+    "name": "Timbal"
+  },
+  "runtime": {
+    "kind": "local-mcp",
+    "command": "bun",
+    "args": [
+      "server.ts"
+    ]
+  },
+  "auth": {
+    "kind": "apiKey",
+    "fields": [
+      {
+        "key": "ANTHROPIC_API_KEY",
+        "label": "Anthropic API key",
+        "secret": true,
+        "placeholder": "sk-ant-…",
+        "required": true,
+        "description": "Powers the computer-use agent that operates the phone. Create one at console.anthropic.com."
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "kind": "network",
+      "domains": [
+        "api.anthropic.com"
+      ]
+    },
+    {
+      "kind": "background"
+    }
+  ],
+  "tools": [
+    {
+      "name": "use_phone",
+      "title": "Use my iPhone",
+      "description": "Operate the user's iPhone through iPhone Mirroring: the phone appears live under the notch and the agent taps, swipes, and types on it. Use when the user asks to do anything on their phone or mobile - check or clean up notifications, send a WhatsApp or message, open a phone app, 'on my phone' / 'on my mobile' requests. The phone must be locked and near this Mac.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "What to do on the phone, e.g. 'send a WhatsApp to Joshua: we just want to hug him'. Keep the user's wording."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Validate the setup without touching the phone. Never set unless the user explicitly asks for a dry run."
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "execution": {
+        "mode": "background",
+        "estimatedDurationMs": 60000
+      },
+      "confirmation": {
+        "schemaVersion": 1,
+        "root": {
+          "type": "card",
+          "title": "Use your iPhone",
+          "children": [
+            {
+              "type": "text",
+              "text": "The phone will appear under the notch and the agent will operate it live."
+            },
+            {
+              "type": "textField",
+              "bind": "{{task}}",
+              "label": "What should I do on your phone?",
+              "multiline": true
+            }
+          ],
+          "footer": [
+            {
+              "type": "actions",
+              "items": [
+                {
+                  "label": "Cancel",
+                  "role": "cancel"
+                },
+                {
+                  "label": "Do it",
+                  "role": "confirm",
+                  "color": "accent"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "phone_status",
+      "title": "Phone status",
+      "description": "Check whether the iPhone Mirroring window is currently connected and visible on this Mac. Use when the user asks 'is my phone connected', 'can you see my phone', or before suggesting a phone task if unsure.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

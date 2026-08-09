@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "tools": {
+    "use_phone": {
+      "args": {
+        "task": "check my notifications",
+        "dry_run": true
+      }
+    },
+    "phone_status": {
+      "args": {}
+    }
+  }
+}
