@@ -71,6 +71,17 @@ def screenshot_block() -> dict:
     return _encode(img.resize((mw, mh), Image.LANCZOS))
 
 
+def screenshot_jpeg(quality: int = None) -> tuple:
+    """Full screen as raw JPEG bytes for the live stream. -> (bytes, w, h)"""
+    img = capture_raw()
+    _, _, mw, mh = geometry()
+    buf = io.BytesIO()
+    img.resize((mw, mh), Image.LANCZOS).convert("RGB").save(
+        buf, format="JPEG", quality=quality or config.STREAM_JPEG_QUALITY
+    )
+    return buf.getvalue(), mw, mh
+
+
 def zoom_block(region) -> dict:
     """Crop of the native-resolution capture for a model-space region."""
     x1, y1, x2, y2 = region

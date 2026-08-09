@@ -16,8 +16,11 @@ and the demo script.
 ## Milestone status (weekend build order)
 
 1. ✅ Mac agent loop driving macOS, hardcoded/typed text commands — no phone.
-2. ⬜ WS gateway + iPhone A app with PTT audio → Deepgram STT on Mac → loop.
-3. ⬜ Screen streaming to iPhone A (ScreenCaptureKit → JPEG over WS).
+2. ✅ WS gateway (`mac/gateway.py`): pairing QR, Deepgram STT, agent wiring,
+   `--mock` mode for iOS dev. iPhone A app itself lives in `ios/` (WIP).
+3. 🟡 Screen streaming to iPhone A — placeholder ships with the gateway
+   (screencapture at ~4 fps during tasks); ScreenCaptureKit helper for
+   10–15 fps still to do.
 4. ⬜ Phone mode: iPhone Mirroring window detection, crop, Cmd+1/2/3, hints.
 5. ⬜ ElevenLabs TTS narration + voice picker.
 6. ⬜ Extras: Live Activity → cloud agent → finale game.
@@ -28,9 +31,11 @@ and the demo script.
 cd mac
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in ANTHROPIC_API_KEY
+cp .env.example .env   # fill in ANTHROPIC_API_KEY + DEEPGRAM_API_KEY
 python main.py                        # REPL
 python main.py "open Safari and search for anthropic"   # one-shot
+python gateway.py                     # WS gateway for iPhone A (prints pairing QR)
+python gateway.py --mock              # protocol mock: no keys/permissions needed
 ```
 
 ### macOS permissions (grant once, to your terminal app / IDE)

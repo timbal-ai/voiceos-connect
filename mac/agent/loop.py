@@ -84,11 +84,13 @@ def _prune_images(messages: list):
         ] or [{"type": "text", "text": "(older screenshot removed)"}]
 
 
-def run_task(task: str, on_narration=None, on_action=None) -> str:
+def run_task(task: str, on_narration=None, on_action=None, cancel_event=None) -> str:
     """Run one task to completion. Returns the model's final text.
 
     on_narration(text): called with each spoken-style progress line.
     on_action(action_dict): called before each action executes.
+    cancel_event: threading.Event; when set, raises TaskCancelled at the
+    next safe point (between model turns / actions).
     """
     client = anthropic.Anthropic()
     mw, mh = screen.model_size()
@@ -102,7 +104,12 @@ def run_task(task: str, on_narration=None, on_action=None) -> str:
     messages = [{"role": "user", "content": task}]
     final_text = ""
 
+    def check_cancel():
+        if cancel_event is not None and cancel_event.is_set():
+            raise TaskCancelled
+
     for _ in range(config.MAX_STEPS):
+        check_cancel()
         response = client.beta.messages.create(
             model=config.MODEL,
             max_tokens=config.MAX_TOKENS,
@@ -128,6 +135,7 @@ def run_task(task: str, on_narration=None, on_action=None) -> str:
 
         results = []
         for tu in tool_uses:
+            check_cancel()
             if on_action:
                 on_action(tu.input)
             try:

@@ -75,19 +75,47 @@ All intelligence lives on the Mac; the app is a mic, a speaker, and a screen.
   ("Step 3 — typing message in WhatsApp"). Keeps narrating if the phone locks.
 - **Distribution:** TestFlight (paid account). No special entitlements.
 
-## Wire protocol (WebSocket)
+## Wire protocol (WebSocket) — implemented in `mac/agent/protocol.py`
 
-JSON control frames; binary frames carry a 1-byte type prefix.
+This is the contract between the iOS app and the Mac gateway. Changes must
+land in `mac/agent/protocol.py`, this doc, and a heads-up to whoever owns the
+other side.
 
-| Frame | Direction | Payload |
+Connect to `ws://<lan-ip>:8765/<token>` (from the QR the gateway prints).
+First frame must be `hello`; the gateway answers `ready`.
+
+**Text frames** are JSON: `{"type": "...", ...fields}`.
+
+| Frame | Direction | Fields |
 | --- | --- | --- |
-| `hello` | A → Mac | token, voice_id, device name |
-| `audio_chunk` (bin) | A → Mac | 16 kHz mono PCM |
-| `transcript` | Mac → A | partial/final text |
-| `say` | Mac → A | text + streamed TTS audio (bin follows) |
-| `frame` (bin) | Mac → A | JPEG + `{source: mac\|iphone, w, h}` |
-| `status` | Mac → A | step, tool, target app (drives Live Activity) |
-| `interrupt` | A → Mac | barge-in / cancel current task |
+| `hello` | A → Mac | `token`, `voice_id`, `device` |
+| `ready` | Mac → A | `server`, `screen: {w, h}` |
+| `audio_end` | A → Mac | none — sent on PTT release, finalizes the utterance (2 s of silence also finalizes) |
+| `transcript` | Mac → A | `text`, `final: bool` |
+| `say` | Mac → A | `text` (narration; streamed TTS audio follows in milestone 5) |
+| `status` | Mac → A | `state: running\|idle`, `step`, `action?`, `task?` (drives Live Activity) |
+| `interrupt` | A → Mac | none — barge-in / cancel current task |
+
+**Binary frames** (both directions) share one layout:
+
+```
+byte 0        frame type: 0x01 audio (A→Mac) | 0x02 video (Mac→A) | 0x03 TTS audio (Mac→A)
+bytes 1–4     uint32 big-endian JSON header length
+next          UTF-8 JSON header
+rest          payload
+```
+
+- `0x01` audio: header `{}`, payload 16 kHz mono s16le PCM chunks.
+- `0x02` video: header `{source: "mac"|"iphone", w, h, seq}`, payload JPEG.
+- `0x03` TTS: milestone 5, header `{codec, rate}`.
+
+New commands mid-task are allowed: a final transcript arriving while a task
+runs cancels it and starts the new one (barge-in semantics).
+
+**iOS dev without a Mac gateway running the real stack:** `python
+mac/gateway.py --mock` needs no API keys or macOS permissions and speaks the
+full protocol with canned transcripts, scripted `say`/`status`, and a
+synthetic video stream.
 
 ## Extras
 

@@ -23,3 +23,8 @@ SETTLE_DELAY_S = 0.6
 KEEP_IMAGES = 3
 
 JPEG_QUALITY = 70
+
+# Live-stream settings (gateway -> iPhone A)
+STREAM_JPEG_QUALITY = 55
+STREAM_INTERVAL_S = 0.2  # screencapture-based placeholder tops out ~4-5 fps
+GATEWAY_PORT = int(os.getenv("VOICEOS_PORT", "8765"))
