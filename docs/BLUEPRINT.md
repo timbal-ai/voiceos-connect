@@ -119,6 +119,28 @@ rest          payload
 New commands mid-task are allowed: a final transcript arriving while a task
 runs cancels it and starts the new one (barge-in semantics).
 
+**Keepalive.** The gateway sends WebSocket protocol pings every 20 s and
+closes the connection if no pong arrives within 20 s (`websockets` library
+defaults). `URLSessionWebSocketTask` answers protocol pings automatically, so
+nothing is required for that direction — but it does NOT ping on its own, so
+the app should call `sendPing` every ~15 s and treat a failed pong as a dead
+connection (tear down and reconnect).
+
+**Reconnect / resume.** The session survives socket drops. If the connection
+dies (mid-task or idle), reconnect to the same URL and send `hello` with the
+same token — the gateway reattaches the new socket to the existing session:
+
+- a running agent task keeps executing across the gap; it is never cancelled
+  by a disconnect (only by `interrupt` or a new command),
+- `ready` and `voices` are re-sent, then a `status` frame resyncs the current
+  state (drive the Live Activity from it),
+- video and TTS audio produced during the gap are dropped (stale); text
+  frames (`say`, `transcript`, `status`) queue up and flush on reattach.
+
+Also note: the first `ws://` connection to a LAN IP triggers iOS's Local
+Network permission prompt — trigger and accept it during onboarding, never
+on stage.
+
 **iOS dev without a Mac gateway running the real stack:** `python
 mac/gateway.py --mock` needs no API keys or macOS permissions and speaks the
 full protocol with canned transcripts, scripted `say`/`status`, and a

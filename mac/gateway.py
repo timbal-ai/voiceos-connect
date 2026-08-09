@@ -7,7 +7,10 @@
 
 Pairing: prints a QR of ws://<lan-ip>:<port>/<token>. The token persists in
 .voiceos_token so reconnects survive gateway restarts. One session at a time;
-a new connection evicts the old one.
+a new connection evicts the old one's socket but REATTACHES to the running
+session — a socket drop mid-task never kills the task. While detached, video
+and TTS audio are dropped (stale on arrival anyway); text frames queue up and
+flush on reattach, and the gateway re-sends ready/voices/status to resync.
 
 Flow per utterance: binary audio chunks stream to Deepgram (partial
 transcripts forwarded live), `audio_end` (or 2s of silence) finalizes, and
@@ -54,8 +57,16 @@ def lan_ip() -> str:
 
 
 class Session:
-    def __init__(self, ws, mock: bool):
-        self.ws = ws
+    """Lives independently of any one WebSocket connection (Isaac's reconnect
+    ask): the session is created on first pairing and survives socket drops;
+    handle() attaches/detaches connections to it."""
+
+    def __init__(self, mock: bool):
+        self.ws = None
+        self.attached = False
+        self.sender_task = None
+        self.workers: list = []
+        self.voices = None  # cached after first fetch, re-sent on reattach
         self.mock = mock
         self.loop = asyncio.get_running_loop()
         self.outbox: asyncio.Queue = asyncio.Queue()
@@ -72,6 +83,25 @@ class Session:
         self.tts_gen = 0  # bumped on barge-in; stale queue items are skipped
         self.http = None  # httpx.AsyncClient, real mode only
 
+    # -- connection lifecycle ------------------------------------------------
+
+    def attach(self, ws):
+        self.ws = ws
+        self.attached = True
+
+    def detach(self):
+        self.attached = False
+        self.ws = None
+        if self.sender_task is not None:
+            self.sender_task.cancel()
+            self.sender_task = None
+
+    def start_workers(self):
+        self.workers = [
+            asyncio.create_task(self.silence_watchdog()),
+            asyncio.create_task(self.tts_worker()),
+        ]
+
     # -- thread-safe emitters (agent loop runs in a worker thread) ----------
 
     def emit(self, type_: str, **fields):
@@ -80,6 +110,8 @@ class Session:
         )
 
     def emit_video(self, jpeg: bytes, w: int, h: int, source: str = "mac"):
+        if not self.attached:
+            return  # stale pixels are worthless after a reconnect
         self.seq += 1
         frame = protocol.encode_binary(
             protocol.BIN_VIDEO, {"source": source, "w": w, "h": h, "seq": self.seq}, jpeg
@@ -115,7 +147,9 @@ class Session:
                 continue
             header = {"codec": tts.CODEC, "rate": tts.SAMPLE_RATE, "say_id": say_id}
             try:
-                if self.mock:
+                if not self.attached:
+                    pass  # nobody listening: skip synthesis, still send done marker
+                elif self.mock:
                     self.loop.call_soon_threadsafe(
                         self.outbox.put_nowait,
                         protocol.encode_binary(protocol.BIN_TTS, header, _mock_tone(say_id)),
@@ -299,43 +333,55 @@ async def handle(ws, token: str, mock: bool, active: dict):
         await ws.close(4401, "bad hello")
         return
 
-    if active.get("ws") is not None:  # one session at a time
-        await active["ws"].close(4409, "replaced by new session")
+    if active.get("ws") is not None:  # one connection at a time
+        await active["ws"].close(4409, "replaced by new connection")
     active["ws"] = ws
 
-    session = Session(ws, mock)
-    session.voice_id = hello.get("voice_id")
-    print(f"● paired: {hello.get('device', 'unknown device')}"
+    session = active.get("session")
+    resumed = session is not None
+    if session is None:
+        session = Session(mock)
+        session.start_workers()
+        active["session"] = session
+    else:
+        session.detach()  # drop the dead connection's sender before reattaching
+    if hello.get("voice_id"):
+        session.voice_id = hello["voice_id"]
+        if session.narrator is not None:
+            session.narrator.set_voice(session.voice_id)
+    session.attach(ws)
+    print(f"● {'resumed' if resumed else 'paired'}: {hello.get('device', 'unknown device')}"
           f" (voice_id={session.voice_id or '-'}){' [mock]' if mock else ''}")
     from agent import screen, tts
 
-    tasks = []
     try:
         mw, mh = (640, 416) if mock else screen.model_size()
         await ws.send(protocol.control("ready", server="voiceos-connect", screen={"w": mw, "h": mh}))
 
-        if mock:
-            voices = [{"id": f"mock-voice-{i}", "name": n, "preview_url": None}
-                      for i, n in enumerate(["Nova", "Atlas", "Luna"], 1)]
-        elif tts.enabled():
-            import httpx
+        if session.voices is None:
+            if mock:
+                session.voices = [{"id": f"mock-voice-{i}", "name": n, "preview_url": None}
+                                  for i, n in enumerate(["Nova", "Atlas", "Luna"], 1)]
+            elif tts.enabled():
+                import httpx
 
-            session.http = httpx.AsyncClient()
-            try:
-                voices = await tts.list_voices(session.http)
-            except Exception as e:
-                print(f"voice list failed: {e}")
-                voices = []
-        else:
-            voices = []
-        if voices:
-            await ws.send(protocol.control("voices", items=voices))
+                session.http = httpx.AsyncClient()
+                try:
+                    session.voices = await tts.list_voices(session.http)
+                except Exception as e:
+                    print(f"voice list failed: {e}")
+                    session.voices = []
+            else:
+                session.voices = []
+        if session.voices:
+            await ws.send(protocol.control("voices", items=session.voices))
 
-        tasks = [
-            asyncio.create_task(session.sender()),
-            asyncio.create_task(session.silence_watchdog()),
-            asyncio.create_task(session.tts_worker()),
-        ]
+        if resumed:  # resync Live Activity state after the gap
+            session.emit("status",
+                         state="running" if session.task_running else "idle",
+                         step=session.step)
+
+        session.sender_task = asyncio.create_task(session.sender())
         async for message in ws:
             if isinstance(message, bytes):
                 ftype, _, payload = protocol.decode_binary(message)
@@ -357,16 +403,13 @@ async def handle(ws, token: str, mock: bool, active: dict):
     except websockets.ConnectionClosed:
         pass
     finally:
-        session.cancel_event.set()
-        for t in tasks:
-            t.cancel()
-        if session.narrator is not None:
-            await session.narrator.close()
-        if session.http is not None:
-            await session.http.aclose()
+        # Only the connection dies; the session (and any running task) stays
+        # alive so the app can reconnect with the same token and resume.
+        if session.ws is ws:
+            session.detach()
         if active.get("ws") is ws:
             active["ws"] = None
-        print("○ session closed")
+        print("○ connection closed (session kept for resume)")
 
 
 async def main():
@@ -381,7 +424,7 @@ async def main():
     qr.print_ascii(invert=True)
     print(f"\nvoiceos-connect gateway{' [MOCK]' if args.mock else ''}\nscan to pair: {url}\n")
 
-    active = {"ws": None}
+    active = {"ws": None, "session": None}
     async with websockets.serve(lambda ws: handle(ws, token, args.mock, active),
                                 "0.0.0.0", config.GATEWAY_PORT, max_size=8 * 1024 * 1024):
         await asyncio.Future()
