@@ -39,6 +39,10 @@ def run(task: str):
 
 
 def main():
+    from agent import panic
+
+    if panic.install():
+        print("panic hotkey armed: ctrl+opt+cmd+space freezes all input")
     if len(sys.argv) > 1:
         run(" ".join(sys.argv[1:]))
         return

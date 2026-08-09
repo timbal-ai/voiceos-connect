@@ -28,10 +28,16 @@ you are doing: "Opening Safari...", "Found the search box, typing...".
 
 App-specific hints:
 - Safari: super+l focuses the address bar; type a query there and press \
-Return to search Google.
+Return to search Google. To open a local file, type its file:// URL there.
 - Spotify: super+k opens search.
 - WhatsApp: the chat search field is at the top-left of the sidebar.
 - Messages: super+n starts a new message.
+- Creating a file (e.g. "build me a little game"): open TextEdit via \
+Spotlight, make it plain text with shift+super+t if needed, type the ENTIRE \
+file content in ONE type action (typing is instant), save with super+s \
+(e.g. game.html in Documents), then open it in Safari via the address bar: \
+file:///Users/<user>/Documents/game.html. Keep generated code under ~60 \
+lines and self-contained (one HTML file, inline canvas + JS).
 """
 
 PHONE_ADDENDUM = """

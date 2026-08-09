@@ -123,7 +123,23 @@ class Session:
         self.workers = [
             asyncio.create_task(self.silence_watchdog()),
             asyncio.create_task(self.tts_worker()),
+            asyncio.create_task(self.panic_watchdog()),
         ]
+
+    async def panic_watchdog(self):
+        """When the panic hotkey fires, cancel the task and say so."""
+        from agent import panic
+
+        was_frozen = False
+        while True:
+            await asyncio.sleep(0.2)
+            frozen = panic.FROZEN.is_set()
+            if frozen and not was_frozen:
+                self.cancel_event.set()
+                self.barge_in()
+                self.emit("status", state="idle", step=self.step)
+                self.emit("say", text="Emergency stop - input frozen.")
+            was_frozen = frozen
 
     # -- thread-safe emitters (agent loop runs in a worker thread) ----------
 
@@ -556,6 +572,14 @@ async def main():
                         help="synthetic video frame size, e.g. 1183x768")
     args = parser.parse_args()
     mock_w, mock_h = (int(v) for v in args.mock_size.lower().split("x"))
+
+    if not args.mock:
+        from agent import panic
+
+        if panic.install():
+            print("panic hotkey armed: ctrl+opt+cmd+space freezes all input")
+        else:
+            print("panic hotkey unavailable (grant Accessibility); corner-slam failsafe still active")
 
     token = get_token()
     url = f"ws://{lan_ip()}:{config.GATEWAY_PORT}/{token}"
