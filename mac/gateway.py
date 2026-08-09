@@ -38,6 +38,13 @@ from agent import config, protocol
 TOKEN_FILE = Path(__file__).parent / ".voiceos_token"
 SILENCE_FINALIZE_S = 2.0
 
+# Mock transcripts cycle so a barge-in shows a visibly different command.
+MOCK_TRANSCRIPTS = [
+    "open safari and search for anthropic",
+    "actually, check the weather for tomorrow instead",
+    "send a message to joshua saying we just want to hug him",
+]
+
 
 def get_token() -> str:
     if TOKEN_FILE.exists():
@@ -61,13 +68,16 @@ class Session:
     ask): the session is created on first pairing and survives socket drops;
     handle() attaches/detaches connections to it."""
 
-    def __init__(self, mock: bool):
+    def __init__(self, mock: bool, mock_fps: float = 5.0, mock_size=(640, 416)):
         self.ws = None
         self.attached = False
         self.sender_task = None
         self.workers: list = []
         self.voices = None  # cached after first fetch, re-sent on reattach
         self.mock = mock
+        self.mock_interval = 1.0 / mock_fps
+        self.mock_w, self.mock_h = mock_size
+        self.mock_cmd_i = 0
         self.loop = asyncio.get_running_loop()
         self.outbox: asyncio.Queue = asyncio.Queue()
         self.utterance = None
@@ -197,7 +207,8 @@ class Session:
         if utt is None:
             return
         if self.mock:
-            text = "open safari and search for anthropic"
+            text = MOCK_TRANSCRIPTS[self.mock_cmd_i % len(MOCK_TRANSCRIPTS)]
+            self.mock_cmd_i += 1
         else:
             text = await utt.finish()
         if not text:
@@ -267,36 +278,41 @@ class Session:
         while True:
             try:
                 if self.mock:
-                    jpeg, w, h = _mock_frame(self.seq)
+                    jpeg, w, h = _mock_frame(self.seq, self.mock_w, self.mock_h)
                 else:
                     jpeg, w, h = await self.loop.run_in_executor(None, screen.screenshot_jpeg)
                 self.emit_video(jpeg, w, h)
             except Exception:
                 pass  # no Screen Recording permission: stream nothing, task still runs
-            await asyncio.sleep(config.STREAM_INTERVAL_S)
+            await asyncio.sleep(self.mock_interval if self.mock else config.STREAM_INTERVAL_S)
 
     async def _mock_task(self) -> str:
+        # (narration line, pause seconds). The 4s line is Isaac's barge-in
+        # window: speak over it (or send interrupt) to test cancel end to end.
         script = [
-            "Opening Safari...",
-            "Typing the search into the address bar...",
-            "Here are the results, opening the first one...",
+            ("Opening Safari...", 1.5),
+            ("Typing the search into the address bar...", 1.5),
+            ("Scanning the results...", 1.5),
+            ("This next step takes a moment - a good window to interrupt me...", 4.0),
+            ("Opening the first result...", 1.5),
+            ("Checking the page loaded properly...", 1.5),
         ]
-        for line in script:
-            if self.cancel_event.is_set():
-                return "Okay, stopping."
+        for line, pause in script:
             self.speak(line)
             self._on_action({"action": "left_click"})
-            await asyncio.sleep(1.5)
+            deadline = time.monotonic() + pause
+            while time.monotonic() < deadline:
+                if self.cancel_event.is_set():
+                    return "Okay, stopping."
+                await asyncio.sleep(0.25)
         return "Done - Safari is showing the Anthropic homepage."
 
 
-def _mock_tone(say_id: int) -> bytes:
-    """0.35s sine beep (pitch varies per line) so iOS can test the TTS audio
-    path without an ElevenLabs key. 16 kHz mono s16le, same as real TTS."""
+def _tone(freq: float, dur: float, rate: int = 16000) -> bytes:
+    """Sine PCM (16 kHz mono s16le) with a fade-out to avoid clicks."""
     import array
     import math
 
-    rate, dur, freq = 16000, 0.35, 380 + (say_id % 5) * 60
     n = int(rate * dur)
     samples = array.array("h", (
         int(8000 * math.sin(2 * math.pi * freq * i / rate) * min(1, (n - i) / 800))
@@ -305,15 +321,52 @@ def _mock_tone(say_id: int) -> bytes:
     return samples.tobytes()
 
 
-def _mock_frame(seq: int):
+def _mock_tone(say_id: int) -> bytes:
+    """0.35s beep (pitch varies per line) so iOS can test the TTS audio path
+    without an ElevenLabs key. Same format as real TTS."""
+    return _tone(380 + (say_id % 5) * 60, 0.35)
+
+
+def start_preview_server(port: int) -> list:
+    """Mock voice previews Isaac can actually play: generates a distinct
+    two-note WAV per voice and serves them over plain HTTP (AVPlayer handles
+    WAV URLs the same as mp3). Returns the voices list for the `voices` frame."""
+    import functools
+    import http.server
+    import tempfile
+    import threading
+    import wave
+
+    directory = tempfile.mkdtemp(prefix="voiceos_previews_")
+    host = lan_ip()
+    voices = []
+    for i, (name, freq) in enumerate([("Nova", 392), ("Atlas", 262), ("Luna", 523)], 1):
+        filename = f"{name.lower()}.wav"
+        with wave.open(f"{directory}/{filename}", "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(_tone(freq, 0.5) + _tone(freq * 1.25, 0.5))
+        voices.append({
+            "id": f"mock-voice-{i}",
+            "name": name,
+            "preview_url": f"http://{host}:{port}/{filename}",
+        })
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return voices
+
+
+def _mock_frame(seq: int, w: int = 640, h: int = 416):
     from PIL import Image, ImageDraw
 
-    w, h = 640, 416
     img = Image.new("RGB", (w, h), (18, 18, 24))
     d = ImageDraw.Draw(img)
     x = (seq * 12) % w
     d.rectangle([x, h // 2 - 20, x + 60, h // 2 + 20], fill=(90, 140, 255))
-    d.text((16, 16), f"voiceos-connect mock stream  #{seq}", fill=(230, 230, 230))
+    d.text((16, 16), f"voiceos-connect mock stream  #{seq}  {w}x{h}", fill=(230, 230, 230))
     d.text((16, h - 28), time.strftime("%H:%M:%S"), fill=(160, 160, 160))
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=60)
@@ -340,7 +393,7 @@ async def handle(ws, token: str, mock: bool, active: dict):
     session = active.get("session")
     resumed = session is not None
     if session is None:
-        session = Session(mock)
+        session = Session(mock, mock_fps=active["mock_fps"], mock_size=active["mock_size"])
         session.start_workers()
         active["session"] = session
     else:
@@ -355,13 +408,12 @@ async def handle(ws, token: str, mock: bool, active: dict):
     from agent import screen, tts
 
     try:
-        mw, mh = (640, 416) if mock else screen.model_size()
+        mw, mh = (session.mock_w, session.mock_h) if mock else screen.model_size()
         await ws.send(protocol.control("ready", server="voiceos-connect", screen={"w": mw, "h": mh}))
 
         if session.voices is None:
             if mock:
-                session.voices = [{"id": f"mock-voice-{i}", "name": n, "preview_url": None}
-                                  for i, n in enumerate(["Nova", "Atlas", "Luna"], 1)]
+                session.voices = active["mock_voices"]
             elif tts.enabled():
                 import httpx
 
@@ -415,7 +467,12 @@ async def handle(ws, token: str, mock: bool, active: dict):
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mock", action="store_true", help="no keys/permissions needed")
+    parser.add_argument("--mock-fps", type=float, default=5.0,
+                        help="synthetic video frame rate (decoder stress-testing)")
+    parser.add_argument("--mock-size", default="640x416",
+                        help="synthetic video frame size, e.g. 1183x768")
     args = parser.parse_args()
+    mock_w, mock_h = (int(v) for v in args.mock_size.lower().split("x"))
 
     token = get_token()
     url = f"ws://{lan_ip()}:{config.GATEWAY_PORT}/{token}"
@@ -424,7 +481,13 @@ async def main():
     qr.print_ascii(invert=True)
     print(f"\nvoiceos-connect gateway{' [MOCK]' if args.mock else ''}\nscan to pair: {url}\n")
 
-    active = {"ws": None, "session": None}
+    active = {
+        "ws": None,
+        "session": None,
+        "mock_fps": args.mock_fps,
+        "mock_size": (mock_w, mock_h),
+        "mock_voices": start_preview_server(config.GATEWAY_PORT + 1) if args.mock else None,
+    }
     async with websockets.serve(lambda ws: handle(ws, token, args.mock, active),
                                 "0.0.0.0", config.GATEWAY_PORT, max_size=8 * 1024 * 1024):
         await asyncio.Future()

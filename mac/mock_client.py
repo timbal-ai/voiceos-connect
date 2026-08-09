@@ -60,6 +60,12 @@ async def main():
                     got["transcript_final"] = True
                 elif kind == "voices":
                     got["voices"] = len(frame["items"])
+                    preview = frame["items"][0].get("preview_url")
+                    if preview:  # must actually be playable/fetchable
+                        import urllib.request
+
+                        with urllib.request.urlopen(preview, timeout=3) as r:
+                            got["preview_bytes"] = len(r.read())
                 elif kind == "say":
                     got["say"] += 1
                 elif kind == "status":
