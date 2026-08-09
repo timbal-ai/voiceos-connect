@@ -30,7 +30,10 @@ and the demo script.
 5. ✅ ElevenLabs TTS narration (streamed 16 kHz PCM behind each `say` frame,
    `eleven_flash_v2_5`) + voice list for the onboarding picker. Mock mode
    sends beep tones so the iOS audio path is testable without a key.
-6. ⬜ Extras: Live Activity → cloud agent → finale game.
+6. 🟡 Extras: cloud agent ✅ (parallel headless-browser agent, "…in the
+   cloud" routes to it; needs `playwright install chromium` once), panic
+   kill switch ✅ (Ctrl+Opt+Cmd+Space), finale prompt hints ✅, rehearsal
+   runbook ✅ (`docs/REHEARSAL.md`). Live Activity is iOS-side.
 
 ## Mac agent quickstart
 

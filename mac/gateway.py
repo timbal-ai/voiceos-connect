@@ -46,6 +46,7 @@ MOCK_TRANSCRIPTS = [
     "now connect to my mobile",
     "send a message to joshua saying we just want to hug him",
     "disconnect from my phone",
+    "have the cloud agent look up flights to san francisco",
 ]
 
 # Phone mode entry/exit is routed deterministically from the transcript, not
@@ -54,6 +55,9 @@ PHONE_CONNECT_RE = re.compile(
     r"\b(connect|switch|go)\b.{0,24}\b(phone|mobile|iphone)\b", re.IGNORECASE)
 PHONE_DISCONNECT_RE = re.compile(
     r"\b(disconnect|exit|leave|back)\b.{0,24}\b(phone|mobile|iphone|mac)\b", re.IGNORECASE)
+
+# "in the cloud" / "cloud agent" -> parallel browser agent (own pair of hands)
+CLOUD_RE = re.compile(r"\bcloud\b", re.IGNORECASE)
 
 MOCK_PHONE_SIZE = (330, 650)  # portrait, roughly the mirroring window aspect
 
@@ -91,6 +95,10 @@ class Session:
         self.mock_w, self.mock_h = mock_size
         self.mock_cmd_i = 0
         self.viewport = None  # (x, y, w, h) of the mirroring window in phone mode
+        self.cloud_running = False
+        self.cloud_cancel = threading.Event()
+        self.cloud_step = 0
+        self._cloud_computer = None
         self.loop = asyncio.get_running_loop()
         self.outbox: asyncio.Queue = asyncio.Queue()
         self.utterance = None
@@ -136,6 +144,7 @@ class Session:
             frozen = panic.FROZEN.is_set()
             if frozen and not was_frozen:
                 self.cancel_event.set()
+                self.cloud_cancel.set()
                 self.barge_in()
                 self.emit("status", state="idle", step=self.step)
                 self.emit("say", text="Emergency stop - input frozen.")
@@ -244,7 +253,10 @@ class Session:
             self.speak("I didn't catch that.")
             return
         self.emit("transcript", text=text, final=True)
-        self.start_task(text)
+        if CLOUD_RE.search(text):
+            asyncio.create_task(self._run_cloud_task(text))
+        else:
+            self.start_task(text)
 
     async def silence_watchdog(self):
         """Finalize an utterance if the client never sends audio_end."""
@@ -319,6 +331,96 @@ class Session:
                 phone=region is not None,
             ),
         )
+
+    # -- cloud agent (parallel headless browser) -----------------------------
+
+    def speak_cloud(self, text: str):
+        self.say_seq += 1
+        self.emit("say", text=text, id=self.say_seq, agent="cloud")
+        self.loop.call_soon_threadsafe(
+            self.tts_queue.put_nowait, (self.tts_gen, self.say_seq, text)
+        )
+
+    def _on_cloud_action(self, action: dict):
+        self.cloud_step += 1
+        self.emit("status", state="running", step=self.cloud_step,
+                  action=action.get("action"), agent="cloud")
+
+    async def _run_cloud_task(self, text: str):
+        """Runs alongside local tasks - the browser is its own pair of hands."""
+        if self.cloud_running:
+            self.speak_cloud("The cloud agent is still busy with the previous task.")
+            return
+        self.cloud_running = True
+        self.cloud_cancel = threading.Event()
+        self.cloud_step = 0
+        self.emit("status", state="running", step=0, task=text, agent="cloud")
+        streamer = asyncio.create_task(self._stream_cloud())
+        try:
+            if self.mock:
+                result = await self._mock_cloud_task()
+            else:
+                cancel = self.cloud_cancel
+
+                def run():
+                    from agent import loop as agent_loop
+                    from agent.browser import CLOUD_SYSTEM, BrowserComputer
+
+                    computer = BrowserComputer()
+                    self._cloud_computer = computer
+                    try:
+                        return agent_loop.run_task(
+                            text,
+                            on_narration=self.speak_cloud,
+                            on_action=self._on_cloud_action,
+                            cancel_event=cancel,
+                            computer=computer,
+                            system=CLOUD_SYSTEM,
+                        )
+                    finally:
+                        computer.close()
+
+                result = await self.loop.run_in_executor(None, run)
+            self.speak_cloud(result)
+        except Exception as e:
+            from agent.loop import TaskCancelled
+
+            if isinstance(e, TaskCancelled):
+                self.speak_cloud("Cloud task stopped.")
+            else:
+                self.speak_cloud(f"The cloud task failed: {e}")
+        finally:
+            self.cloud_running = False
+            self._cloud_computer = None
+            streamer.cancel()
+            self.emit("status", state="idle", step=self.cloud_step, agent="cloud")
+
+    async def _stream_cloud(self):
+        from agent import browser
+
+        last = None
+        while True:
+            await asyncio.sleep(0.3)
+            if self.mock:
+                jpeg, w, h = _mock_frame(self.seq, 640, 400)
+                self.emit_video(jpeg, w, h, source="cloud")
+                continue
+            computer = self._cloud_computer
+            jpeg = computer.last_jpeg if computer is not None else None
+            if jpeg is not None and jpeg is not last:
+                last = jpeg
+                self.emit_video(jpeg, browser.W, browser.H, source="cloud")
+
+    async def _mock_cloud_task(self) -> str:
+        for line in ("Spinning up the cloud browser...",
+                     "Searching the web...",
+                     "Reading the top result..."):
+            if self.cloud_cancel.is_set():
+                return "Cloud task stopped."
+            self.speak_cloud(line)
+            self._on_cloud_action({"action": "left_click"})
+            await asyncio.sleep(1.2)
+        return "Cloud agent done - found what you asked for."
 
     async def _connect_phone(self) -> str:
         self.speak("Connecting to your iPhone...")
@@ -545,6 +647,7 @@ async def handle(ws, token: str, mock: bool, active: dict):
                     await session.on_audio_end()
                 elif kind == "interrupt":
                     session.cancel_event.set()
+                    session.cloud_cancel.set()
                     session.barge_in()
                     session.emit("status", state="idle", step=session.step)
                 elif kind == "set_voice":

@@ -18,53 +18,65 @@ class TaskCancelled(Exception):
     pass
 
 
-def _execute(action: dict, vp: screen.Viewport) -> list:
-    """Run one computer-use action; return tool_result content blocks."""
-    kind = action["action"]
+class DesktopComputer:
+    """The default executor: the real macOS desktop (optionally a Viewport
+    crop of it, e.g. the iPhone Mirroring window in phone mode)."""
 
-    if kind == "screenshot":
+    def __init__(self, region=None):
+        self.vp = screen.Viewport(region)
+
+    @property
+    def model_size(self):
+        return self.vp.model_w, self.vp.model_h
+
+    def execute(self, action: dict) -> list:
+        """Run one computer-use action; return tool_result content blocks."""
+        kind = action["action"]
+        vp = self.vp
+
+        if kind == "screenshot":
+            return [vp.screenshot_block()]
+        if kind == "zoom":
+            return [vp.zoom_block(action["region"])]
+        if kind == "cursor_position":
+            x, y = control.cursor_position()
+            return [{"type": "text", "text": f"Cursor at ({x}, {y}) in screen points."}]
+        if kind == "wait":
+            time.sleep(min(float(action.get("duration", 1)), 5.0))
+        elif kind == "key":
+            control.press_combo(action["text"])
+        elif kind == "hold_key":
+            control.hold_key(action["text"], float(action.get("duration", 1)))
+        elif kind == "type":
+            control.type_text(action["text"])
+        elif kind == "mouse_move":
+            control.move(*vp.to_points(*action["coordinate"]))
+        elif kind in ("left_click", "right_click", "middle_click", "double_click", "triple_click"):
+            x, y = vp.to_points(*action["coordinate"])
+            button = {"right_click": "right", "middle_click": "middle"}.get(kind, "left")
+            clicks = {"double_click": 2, "triple_click": 3}.get(kind, 1)
+            control.click(x, y, button=button, clicks=clicks, modifier=action.get("text"))
+        elif kind == "left_mouse_down":
+            control.mouse_down(*vp.to_points(*action["coordinate"]))
+        elif kind == "left_mouse_up":
+            control.mouse_up(*vp.to_points(*action["coordinate"]))
+        elif kind == "left_click_drag":
+            x1, y1 = vp.to_points(*action["start_coordinate"])
+            x2, y2 = vp.to_points(*action["coordinate"])
+            control.drag(x1, y1, x2, y2)
+        elif kind == "scroll":
+            x, y = vp.to_points(*action["coordinate"])
+            control.scroll(
+                x, y,
+                action["scroll_direction"],
+                int(action.get("scroll_amount", 3)),
+                modifier=action.get("text"),
+            )
+        else:
+            return [{"type": "text", "text": f"Unsupported action: {kind}"}]
+
+        time.sleep(config.SETTLE_DELAY_S)
         return [vp.screenshot_block()]
-    if kind == "zoom":
-        return [vp.zoom_block(action["region"])]
-    if kind == "cursor_position":
-        x, y = control.cursor_position()
-        return [{"type": "text", "text": f"Cursor at ({x}, {y}) in screen points."}]
-    if kind == "wait":
-        time.sleep(min(float(action.get("duration", 1)), 5.0))
-    elif kind == "key":
-        control.press_combo(action["text"])
-    elif kind == "hold_key":
-        control.hold_key(action["text"], float(action.get("duration", 1)))
-    elif kind == "type":
-        control.type_text(action["text"])
-    elif kind == "mouse_move":
-        control.move(*vp.to_points(*action["coordinate"]))
-    elif kind in ("left_click", "right_click", "middle_click", "double_click", "triple_click"):
-        x, y = vp.to_points(*action["coordinate"])
-        button = {"right_click": "right", "middle_click": "middle"}.get(kind, "left")
-        clicks = {"double_click": 2, "triple_click": 3}.get(kind, 1)
-        control.click(x, y, button=button, clicks=clicks, modifier=action.get("text"))
-    elif kind == "left_mouse_down":
-        control.mouse_down(*vp.to_points(*action["coordinate"]))
-    elif kind == "left_mouse_up":
-        control.mouse_up(*vp.to_points(*action["coordinate"]))
-    elif kind == "left_click_drag":
-        x1, y1 = vp.to_points(*action["start_coordinate"])
-        x2, y2 = vp.to_points(*action["coordinate"])
-        control.drag(x1, y1, x2, y2)
-    elif kind == "scroll":
-        x, y = vp.to_points(*action["coordinate"])
-        control.scroll(
-            x, y,
-            action["scroll_direction"],
-            int(action.get("scroll_amount", 3)),
-            modifier=action.get("text"),
-        )
-    else:
-        return [{"type": "text", "text": f"Unsupported action: {kind}"}]
-
-    time.sleep(config.SETTLE_DELAY_S)
-    return [vp.screenshot_block()]
 
 
 def _prune_images(messages: list):
@@ -85,7 +97,7 @@ def _prune_images(messages: list):
 
 
 def run_task(task: str, on_narration=None, on_action=None, cancel_event=None,
-             region=None, phone=False) -> str:
+             region=None, phone=False, computer=None, system=None) -> str:
     """Run one task to completion. Returns the model's final text.
 
     on_narration(text): called with each spoken-style progress line.
@@ -94,15 +106,20 @@ def run_task(task: str, on_narration=None, on_action=None, cancel_event=None,
     next safe point (between model turns / actions).
     region: (x, y, w, h) display points to crop to (phone mode: the iPhone
     Mirroring window). phone adds the phone-mode prompt addendum.
+    computer: executor with .model_size and .execute(action) - defaults to
+    DesktopComputer; the cloud agent passes a BrowserComputer.
     """
     client = anthropic.Anthropic()
-    vp = screen.Viewport(region)
-    system = prompts.SYSTEM + (prompts.PHONE_ADDENDUM if phone else "")
+    if computer is None:
+        computer = DesktopComputer(region)
+    if system is None:
+        system = prompts.SYSTEM + (prompts.PHONE_ADDENDUM if phone else "")
+    mw, mh = computer.model_size
     tools = [{
         "type": config.TOOL_TYPE,
         "name": "computer",
-        "display_width_px": vp.model_w,
-        "display_height_px": vp.model_h,
+        "display_width_px": mw,
+        "display_height_px": mh,
         "enable_zoom": True,
     }]
     messages = [{"role": "user", "content": task}]
@@ -143,7 +160,7 @@ def run_task(task: str, on_narration=None, on_action=None, cancel_event=None,
             if on_action:
                 on_action(tu.input)
             try:
-                content = _execute(tu.input, vp)
+                content = computer.execute(tu.input)
             except Exception as e:  # report failures back to the model, rule 5 style
                 content = [{"type": "text", "text": f"Action failed: {e}"}]
             results.append({

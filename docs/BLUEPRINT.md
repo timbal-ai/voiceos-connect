@@ -94,8 +94,8 @@ First frame must be `hello`; the gateway answers `ready`.
 | `set_voice` | A → Mac | `voice_id` — switch narration voice after pairing |
 | `audio_end` | A → Mac | none — sent on PTT release, finalizes the utterance (2 s of silence also finalizes) |
 | `transcript` | Mac → A | `text`, `final: bool` |
-| `say` | Mac → A | `text`, `id` — narration line; its TTS audio streams as `0x03` binary frames tagged `say_id: id` |
-| `status` | Mac → A | `state: running\|idle`, `step`, `action?`, `task?` (drives Live Activity) |
+| `say` | Mac → A | `text`, `id`, `agent?: "cloud"` — narration line; its TTS audio streams as `0x03` binary frames tagged `say_id: id` |
+| `status` | Mac → A | `state: running\|idle`, `step`, `action?`, `task?`, `agent?: "cloud"` (drives Live Activity) |
 | `interrupt` | A → Mac | none — barge-in / cancel current task |
 
 **Binary frames** (both directions) share one layout:
@@ -108,7 +108,7 @@ rest          payload
 ```
 
 - `0x01` audio: header `{}`, payload 16 kHz mono s16le PCM chunks.
-- `0x02` video: header `{source: "mac"|"iphone", w, h, seq}`, payload JPEG.
+- `0x02` video: header `{source: "mac"|"iphone"|"cloud", w, h, seq}`, payload JPEG.
 - `0x03` TTS: header `{codec: "pcm_s16le", rate: 16000, say_id, done?}`,
   payload PCM chunks streamed during synthesis; an empty-payload frame with
   `done: true` closes that `say_id`. Same 16 kHz rate as the mic path, so it
@@ -148,10 +148,12 @@ synthetic video stream.
 
 ## Extras
 
-- **Multi-agent personas** — orchestrator routes tasks to named agents, each
-  with its own voice. Local agents run sequentially (one pair of hands); the
-  parallel one is a cloud agent (Anthropic computer-use reference container,
-  headless browser) streaming to iPhone A too.
+- **Cloud agent** *(built — `mac/agent/browser.py`)* — any command containing
+  "cloud" runs on a parallel agent driving a headless Chromium (Playwright)
+  instead of the Mac: its own pair of hands, so it runs WHILE a local task
+  executes. Frames stream as `source: "cloud"`; its `say`/`status` frames
+  carry `agent: "cloud"`. Setup once: `playwright install chromium`.
+  Per-persona voices are the remaining nicety.
 - **Finale** — "build me a little game and play it": agent writes a ~60-line
   canvas game to a local HTML file, opens it, plays a round. Cut if tight.
 
