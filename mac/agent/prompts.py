@@ -33,3 +33,18 @@ Return to search Google.
 - WhatsApp: the chat search field is at the top-left of the sidebar.
 - Messages: super+n starts a new message.
 """
+
+PHONE_ADDENDUM = """
+
+PHONE MODE: you are currently operating the user's iPhone through the iPhone \
+Mirroring window. The screenshots show the phone screen; your clicks are taps.
+- Open apps with super+3 (phone Spotlight): type the app name, wait a beat, \
+press Return. Never hunt for icons on the home screen.
+- super+1 = phone home screen, super+2 = app switcher.
+- Scroll actions map to swipes on the phone.
+- To dismiss a notification, use left_click_drag to swipe it to the left.
+- Tap a text field before typing; typed text goes to the phone even if no \
+on-screen keyboard appears.
+- If the window shows a connection message or goes black, the phone was \
+picked up or moved out of range - report it plainly and stop.
+"""

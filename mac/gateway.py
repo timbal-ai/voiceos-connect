@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import io
 import json
+import re
 import secrets
 import socket
 import threading
@@ -38,12 +39,23 @@ from agent import config, protocol
 TOKEN_FILE = Path(__file__).parent / ".voiceos_token"
 SILENCE_FINALIZE_S = 2.0
 
-# Mock transcripts cycle so a barge-in shows a visibly different command.
+# Mock transcripts cycle so a barge-in shows a visibly different command,
+# and the cycle walks through the phone-mode flow (portrait iphone frames).
 MOCK_TRANSCRIPTS = [
     "open safari and search for anthropic",
-    "actually, check the weather for tomorrow instead",
+    "now connect to my mobile",
     "send a message to joshua saying we just want to hug him",
+    "disconnect from my phone",
 ]
+
+# Phone mode entry/exit is routed deterministically from the transcript, not
+# by the model — deterministic routing is what survives a live demo.
+PHONE_CONNECT_RE = re.compile(
+    r"\b(connect|switch|go)\b.{0,24}\b(phone|mobile|iphone)\b", re.IGNORECASE)
+PHONE_DISCONNECT_RE = re.compile(
+    r"\b(disconnect|exit|leave|back)\b.{0,24}\b(phone|mobile|iphone|mac)\b", re.IGNORECASE)
+
+MOCK_PHONE_SIZE = (330, 650)  # portrait, roughly the mirroring window aspect
 
 
 def get_token() -> str:
@@ -78,6 +90,7 @@ class Session:
         self.mock_interval = 1.0 / mock_fps
         self.mock_w, self.mock_h = mock_size
         self.mock_cmd_i = 0
+        self.viewport = None  # (x, y, w, h) of the mirroring window in phone mode
         self.loop = asyncio.get_running_loop()
         self.outbox: asyncio.Queue = asyncio.Queue()
         self.utterance = None
@@ -240,21 +253,15 @@ class Session:
         self.emit("status", state="running", step=0, task=text)
         streamer = asyncio.create_task(self._stream_screens())
         try:
-            if self.mock:
+            if PHONE_CONNECT_RE.search(text) and self.viewport is None:
+                result = await self._connect_phone()
+            elif PHONE_DISCONNECT_RE.search(text) and self.viewport is not None:
+                self.viewport = None
+                result = "Back on the Mac."
+            elif self.mock:
                 result = await self._mock_task()
             else:
-                from agent import loop as agent_loop
-
-                cancel = self.cancel_event
-                result = await self.loop.run_in_executor(
-                    None,
-                    lambda: agent_loop.run_task(
-                        text,
-                        on_narration=self.speak,
-                        on_action=self._on_action,
-                        cancel_event=cancel,
-                    ),
-                )
+                result = await self._run_agent(text)
             self.speak(result)
         except Exception as e:
             from agent.loop import TaskCancelled
@@ -268,41 +275,99 @@ class Session:
             streamer.cancel()
             self.emit("status", state="idle", step=self.step)
 
+    async def _run_agent(self, text: str) -> str:
+        from agent import loop as agent_loop
+
+        if self.viewport is not None:
+            # phone mode: re-locate the window (it may have moved) and detect
+            # a dropped mirroring session before clicking into the void
+            from agent import mirroring
+
+            rect = await self.loop.run_in_executor(None, mirroring.find_window)
+            if rect is None:
+                self.viewport = None
+                return ("The phone connection dropped - the mirroring window is "
+                        "gone. Say 'connect to my phone' to retry.")
+            self.viewport = tuple(rect)
+
+        cancel = self.cancel_event
+        region = self.viewport
+        return await self.loop.run_in_executor(
+            None,
+            lambda: agent_loop.run_task(
+                text,
+                on_narration=self.speak,
+                on_action=self._on_action,
+                cancel_event=cancel,
+                region=region,
+                phone=region is not None,
+            ),
+        )
+
+    async def _connect_phone(self) -> str:
+        self.speak("Connecting to your iPhone...")
+        if self.mock:
+            await asyncio.sleep(1.5)
+            self.viewport = (0, 0, *MOCK_PHONE_SIZE)
+        else:
+            from agent import mirroring
+
+            rect = await self.loop.run_in_executor(None, mirroring.connect)
+            self.viewport = tuple(rect)
+        await asyncio.sleep(2.0)  # let the stream show the phone waking up
+        return "Connected. I can see your phone - what should I do on it?"
+
     def _on_action(self, action: dict):
         self.step += 1
         self.emit("status", state="running", step=self.step, action=action.get("action"))
 
     async def _stream_screens(self):
+        """Streams the display (or the mirroring window in phone mode) while a
+        task runs. Restarts the capture whenever the viewport changes so the
+        phone fills iPhone A's screen the moment phone mode engages."""
         from agent import screen
 
-        if not self.mock:
+        while True:
+            rect = self.viewport
+            source = "iphone" if rect is not None else "mac"
+
+            if self.mock:
+                w, h = MOCK_PHONE_SIZE if rect is not None else (self.mock_w, self.mock_h)
+                while self.viewport == rect:
+                    jpeg, mw, mh = _mock_frame(self.seq, w, h)
+                    self.emit_video(jpeg, mw, mh, source=source)
+                    await asyncio.sleep(self.mock_interval)
+                continue
+
             # Preferred path: ScreenCaptureKit helper at 10-15 fps.
             try:
                 from agent.sck import SCKStream
 
-                stream = SCKStream(fps=config.STREAM_FPS)
+                stream = SCKStream(fps=config.STREAM_FPS, rect=rect)
                 await stream.start()
                 try:
                     async for jpeg, w, h in stream.frames():
-                        self.emit_video(jpeg, w, h)
+                        self.emit_video(jpeg, w, h, source=source)
+                        if self.viewport != rect:
+                            break  # viewport changed: restart with the new crop
                 finally:
                     await stream.stop()
-                return
+                if self.viewport == rect:
+                    return  # helper died for another reason; don't spin
+                continue
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 print(f"SCK streamer unavailable ({e}); falling back to screencapture")
 
-        while True:
-            try:
-                if self.mock:
-                    jpeg, w, h = _mock_frame(self.seq, self.mock_w, self.mock_h)
-                else:
-                    jpeg, w, h = await self.loop.run_in_executor(None, screen.screenshot_jpeg)
-                self.emit_video(jpeg, w, h)
-            except Exception:
-                pass  # no Screen Recording permission: stream nothing, task still runs
-            await asyncio.sleep(self.mock_interval if self.mock else config.STREAM_INTERVAL_S)
+            while self.viewport == rect:
+                try:
+                    jpeg, w, h = await self.loop.run_in_executor(
+                        None, screen.screenshot_jpeg, None, rect)
+                    self.emit_video(jpeg, w, h, source=source)
+                except Exception:
+                    pass  # no Screen Recording permission: stream nothing
+                await asyncio.sleep(config.STREAM_INTERVAL_S)
 
     async def _mock_task(self) -> str:
         # (narration line, pause seconds). The 4s line is Isaac's barge-in

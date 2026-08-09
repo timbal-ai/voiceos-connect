@@ -22,7 +22,11 @@ and the demo script.
    (`sck_streamer.swift`, compiled on first use) at 12 fps, verified at
    13.4 fps real capture. Falls back to ~4 fps screencapture if swiftc or
    the permission is missing. `--rect` crop support ready for phone mode.
-4. ⬜ Phone mode: iPhone Mirroring window detection, crop, Cmd+1/2/3, hints.
+4. 🟡 Phone mode: built, untested on real hardware (gated on the EU
+   mirroring pairing verdict). "Connect to my phone" is routed
+   deterministically from the transcript; the agent viewport crops to the
+   mirroring window; the stream switches to `source: iphone`; dropped
+   windows are detected before each task. Mock walks the whole flow.
 5. ✅ ElevenLabs TTS narration (streamed 16 kHz PCM behind each `say` frame,
    `eleven_flash_v2_5`) + voice list for the onboarding picker. Mock mode
    sends beep tones so the iOS audio path is testable without a key.

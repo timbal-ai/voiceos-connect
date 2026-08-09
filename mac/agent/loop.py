@@ -18,14 +18,14 @@ class TaskCancelled(Exception):
     pass
 
 
-def _execute(action: dict) -> list:
+def _execute(action: dict, vp: screen.Viewport) -> list:
     """Run one computer-use action; return tool_result content blocks."""
     kind = action["action"]
 
     if kind == "screenshot":
-        return [screen.screenshot_block()]
+        return [vp.screenshot_block()]
     if kind == "zoom":
-        return [screen.zoom_block(action["region"])]
+        return [vp.zoom_block(action["region"])]
     if kind == "cursor_position":
         x, y = control.cursor_position()
         return [{"type": "text", "text": f"Cursor at ({x}, {y}) in screen points."}]
@@ -38,22 +38,22 @@ def _execute(action: dict) -> list:
     elif kind == "type":
         control.type_text(action["text"])
     elif kind == "mouse_move":
-        control.move(*screen.to_points(*action["coordinate"]))
+        control.move(*vp.to_points(*action["coordinate"]))
     elif kind in ("left_click", "right_click", "middle_click", "double_click", "triple_click"):
-        x, y = screen.to_points(*action["coordinate"])
+        x, y = vp.to_points(*action["coordinate"])
         button = {"right_click": "right", "middle_click": "middle"}.get(kind, "left")
         clicks = {"double_click": 2, "triple_click": 3}.get(kind, 1)
         control.click(x, y, button=button, clicks=clicks, modifier=action.get("text"))
     elif kind == "left_mouse_down":
-        control.mouse_down(*screen.to_points(*action["coordinate"]))
+        control.mouse_down(*vp.to_points(*action["coordinate"]))
     elif kind == "left_mouse_up":
-        control.mouse_up(*screen.to_points(*action["coordinate"]))
+        control.mouse_up(*vp.to_points(*action["coordinate"]))
     elif kind == "left_click_drag":
-        x1, y1 = screen.to_points(*action["start_coordinate"])
-        x2, y2 = screen.to_points(*action["coordinate"])
+        x1, y1 = vp.to_points(*action["start_coordinate"])
+        x2, y2 = vp.to_points(*action["coordinate"])
         control.drag(x1, y1, x2, y2)
     elif kind == "scroll":
-        x, y = screen.to_points(*action["coordinate"])
+        x, y = vp.to_points(*action["coordinate"])
         control.scroll(
             x, y,
             action["scroll_direction"],
@@ -64,7 +64,7 @@ def _execute(action: dict) -> list:
         return [{"type": "text", "text": f"Unsupported action: {kind}"}]
 
     time.sleep(config.SETTLE_DELAY_S)
-    return [screen.screenshot_block()]
+    return [vp.screenshot_block()]
 
 
 def _prune_images(messages: list):
@@ -84,21 +84,25 @@ def _prune_images(messages: list):
         ] or [{"type": "text", "text": "(older screenshot removed)"}]
 
 
-def run_task(task: str, on_narration=None, on_action=None, cancel_event=None) -> str:
+def run_task(task: str, on_narration=None, on_action=None, cancel_event=None,
+             region=None, phone=False) -> str:
     """Run one task to completion. Returns the model's final text.
 
     on_narration(text): called with each spoken-style progress line.
     on_action(action_dict): called before each action executes.
     cancel_event: threading.Event; when set, raises TaskCancelled at the
     next safe point (between model turns / actions).
+    region: (x, y, w, h) display points to crop to (phone mode: the iPhone
+    Mirroring window). phone adds the phone-mode prompt addendum.
     """
     client = anthropic.Anthropic()
-    mw, mh = screen.model_size()
+    vp = screen.Viewport(region)
+    system = prompts.SYSTEM + (prompts.PHONE_ADDENDUM if phone else "")
     tools = [{
         "type": config.TOOL_TYPE,
         "name": "computer",
-        "display_width_px": mw,
-        "display_height_px": mh,
+        "display_width_px": vp.model_w,
+        "display_height_px": vp.model_h,
         "enable_zoom": True,
     }]
     messages = [{"role": "user", "content": task}]
@@ -113,7 +117,7 @@ def run_task(task: str, on_narration=None, on_action=None, cancel_event=None) ->
         response = client.beta.messages.create(
             model=config.MODEL,
             max_tokens=config.MAX_TOKENS,
-            system=prompts.SYSTEM,
+            system=system,
             tools=tools,
             messages=messages,
             betas=[config.BETA_FLAG],
@@ -139,7 +143,7 @@ def run_task(task: str, on_narration=None, on_action=None, cancel_event=None) ->
             if on_action:
                 on_action(tu.input)
             try:
-                content = _execute(tu.input)
+                content = _execute(tu.input, vp)
             except Exception as e:  # report failures back to the model, rule 5 style
                 content = [{"type": "text", "text": f"Action failed: {e}"}]
             results.append({

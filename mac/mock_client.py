@@ -92,6 +92,53 @@ async def main():
     sys.exit(0 if ok else 1)
 
 
+async def _utter(ws):
+    """One fake PTT press: 0.5s of silence chunks + audio_end."""
+    chunk = b"\x00\x00" * 800
+    for _ in range(10):
+        await ws.send(protocol.encode_binary(protocol.BIN_AUDIO, {}, chunk))
+        await asyncio.sleep(0.05)
+    await ws.send(protocol.control("audio_end"))
+
+
+async def main_phone():
+    """Walk the phone-mode flow: command 1 runs on the 'mac', command 2 is
+    'connect to my mobile' — expect iphone-sourced portrait frames after."""
+    token = (Path(__file__).parent / ".voiceos_token").read_text().strip()
+    url = f"ws://127.0.0.1:{config.GATEWAY_PORT}/{token}"
+    got = {"mac_frames": 0, "iphone_frames": 0, "iphone_size": None, "says": []}
+
+    async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
+        await ws.send(protocol.control("hello", token=token, device="mock-client"))
+        assert json.loads(await ws.recv())["type"] == "ready"
+        for round_no in (1, 2):
+            await _utter(ws)
+            idle = False
+            while not idle:
+                message = await asyncio.wait_for(ws.recv(), timeout=25)
+                if isinstance(message, bytes):
+                    ftype, header, payload = protocol.decode_binary(message)
+                    if ftype == protocol.BIN_VIDEO:
+                        if header.get("source") == "iphone":
+                            got["iphone_frames"] += 1
+                            got["iphone_size"] = (header["w"], header["h"])
+                        else:
+                            got["mac_frames"] += 1
+                    continue
+                frame = json.loads(message)
+                if frame["type"] == "say":
+                    got["says"].append(frame["text"])
+                    print(f"<- say: {frame['text']}")
+                elif frame["type"] == "status" and frame.get("state") == "idle":
+                    idle = True
+
+    ok = (got["mac_frames"] > 0 and got["iphone_frames"] > 0
+          and any("Connected" in s for s in got["says"]))
+    print(f"\nsummary: mac={got['mac_frames']} iphone={got['iphone_frames']} "
+          f"size={got['iphone_size']}\n{'PASS' if ok else 'FAIL'}")
+    sys.exit(0 if ok else 1)
+
+
 async def main_reconnect():
     """Drop the socket mid-task, reconnect with the same token, and require
     the task to survive the gap (Isaac's resume semantics)."""
@@ -144,4 +191,9 @@ async def main_reconnect():
 
 
 if __name__ == "__main__":
-    asyncio.run(main_reconnect() if "--reconnect" in sys.argv else main())
+    if "--reconnect" in sys.argv:
+        asyncio.run(main_reconnect())
+    elif "--phone" in sys.argv:
+        asyncio.run(main_phone())
+    else:
+        asyncio.run(main())
