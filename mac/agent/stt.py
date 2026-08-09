@@ -1,58 +1,68 @@
-"""Streaming STT: one Deepgram websocket per PTT utterance.
+"""Streaming STT: Deepgram Nova-3 over a raw websocket, one per PTT utterance.
 
-Per-utterance connections cost ~300ms at speech start but avoid keep-alive
-lifecycle bugs, which matter more on stage. The gateway opens an
-UtteranceSession on the first audio chunk and finishes it on `audio_end`
-(or silence timeout).
+Ported from timbal's production `DeepgramNovaSTT` (timbal/python/timbal/voice/
+deepgram.py) — same wire recipe, minus the parts a PTT flow doesn't need:
+
+- mic PCM buffered to ~80ms frames before sending (Deepgram's recommended
+  cadence; tiny frames hurt latency, timer-only flushing feels commit-gated)
+- KeepAlive every 5s: Nova drops the socket with NET-0001 after ~10s without
+  audio, which a silent PTT hold would otherwise trigger
+- `is_final` segments buffered; joined into the utterance on finish()
+- finish() = flush + Finalize (Deepgram force-commits and answers with a
+  `from_finalize` result) + CloseStream
 """
 
 import asyncio
+import contextlib
+import json
+import os
+from urllib.parse import urlencode
 
-from deepgram import AsyncDeepgramClient
-from deepgram.core.events import EventType
+from websockets.asyncio.client import connect as ws_connect
+from websockets.exceptions import ConnectionClosed
+
+_HOST = "api.deepgram.com"
+MODEL = os.getenv("VOICEOS_STT_MODEL", "nova-3")
+
+_FLUSH_INTERVAL = 0.08
+_FLUSH_BYTES = int(16_000 * _FLUSH_INTERVAL * 2)  # 80ms of 16 kHz s16le mono
+_KEEPALIVE_INTERVAL = 5.0
 
 
 class UtteranceSession:
     """Feed PCM in, get partial callbacks, call finish() for the final text."""
 
-    def __init__(self, client: AsyncDeepgramClient, on_partial):
-        self._client = client
+    def __init__(self, on_partial):
         self._on_partial = on_partial
         self._segments: list[str] = []
         self._pending = ""
-        self._done = asyncio.Event()
-        self._ctx = None
-        self._conn = None
-        self._listener = None
+        self._buf = bytearray()
+        # One lock covers buffer mutation and ws.send so audio frames can't
+        # interleave out of order (same rationale as the timbal original).
+        self._wire_lock = asyncio.Lock()
+        self._closed = asyncio.Event()
+        self._ws = None
+        self._tasks: list[asyncio.Task] = []
 
     async def start(self):
-        self._ctx = self._client.listen.v1.connect(
-            model="nova-3",
-            encoding="linear16",
-            sample_rate="16000",
-            channels="1",
-            smart_format="true",
-            interim_results="true",
-            endpointing="300",
+        params = {
+            "model": MODEL,
+            "encoding": "linear16",
+            "sample_rate": "16000",
+            "channels": "1",
+            "interim_results": "true",
+            "smart_format": "true",
+            "punctuate": "true",
+            "endpointing": "300",
+        }
+        self._ws = await ws_connect(
+            f"wss://{_HOST}/v1/listen?{urlencode(params)}",
+            additional_headers={"Authorization": f"Token {os.environ['DEEPGRAM_API_KEY']}"},
         )
-        self._conn = await self._ctx.__aenter__()
-        self._conn.on(EventType.MESSAGE, self._on_message)
-        self._conn.on(EventType.CLOSE, lambda _: self._done.set())
-        self._listener = asyncio.create_task(self._conn.start_listening())
-
-    def _on_message(self, message):
-        channel = getattr(message, "channel", None)
-        if channel is None or not channel.alternatives:
-            return
-        text = channel.alternatives[0].transcript
-        if not text:
-            return
-        if getattr(message, "is_final", False):
-            self._segments.append(text)
-            self._pending = ""
-        else:
-            self._pending = text
-        self._on_partial(self.text)
+        self._tasks = [
+            asyncio.create_task(self._receive_loop()),
+            asyncio.create_task(self._keepalive_loop()),
+        ]
 
     @property
     def text(self) -> str:
@@ -60,21 +70,78 @@ class UtteranceSession:
         return " ".join(parts).strip()
 
     async def feed(self, chunk: bytes):
-        await self._conn.send_media(chunk)
+        if not chunk:
+            return
+        async with self._wire_lock:
+            self._buf.extend(chunk)
+            if len(self._buf) < _FLUSH_BYTES or self._ws is None:
+                return
+            raw = bytes(self._buf)
+            self._buf.clear()
+            with contextlib.suppress(ConnectionClosed):
+                await self._ws.send(raw)
+
+    async def _flush_audio(self):
+        async with self._wire_lock:
+            raw = bytes(self._buf)
+            self._buf.clear()
+            if raw and self._ws is not None:
+                with contextlib.suppress(ConnectionClosed):
+                    await self._ws.send(raw)
+
+    async def _send_json(self, payload: dict):
+        async with self._wire_lock:
+            if self._ws is not None:
+                with contextlib.suppress(Exception):
+                    await self._ws.send(json.dumps(payload))
+
+    async def _keepalive_loop(self):
+        while True:
+            await asyncio.sleep(_KEEPALIVE_INTERVAL)
+            await self._send_json({"type": "KeepAlive"})
+
+    async def _receive_loop(self):
+        try:
+            async for raw in self._ws:
+                if isinstance(raw, bytes):
+                    continue
+                msg = json.loads(raw)
+                if msg.get("type") != "Results":
+                    continue
+                alternatives = (msg.get("channel") or {}).get("alternatives") or [{}]
+                text = (alternatives[0].get("transcript") or "").strip()
+                if not msg.get("is_final"):
+                    if text:
+                        self._pending = text
+                        self._on_partial(self.text)
+                    continue
+                self._pending = ""
+                if text:
+                    self._segments.append(text)
+                    self._on_partial(self.text)
+        except ConnectionClosed:
+            pass
+        finally:
+            self._closed.set()
 
     async def finish(self) -> str:
-        """Flush Deepgram and return the full utterance text."""
+        """Force-commit whatever Deepgram is holding and return the utterance.
+
+        Finalize + CloseStream, then wait for Deepgram to close the socket:
+        it keeps sending final Results while draining, and tearing down on
+        the first from_finalize loses the tail of the utterance.
+        """
         try:
-            await self._conn.send_finalize()
-            await self._conn.send_close_stream()
-            await asyncio.wait_for(self._done.wait(), timeout=3.0)
-        except Exception:
-            pass  # a lost close handshake shouldn't eat the transcript
+            await self._flush_audio()
+            await self._send_json({"type": "Finalize"})
+            await self._send_json({"type": "CloseStream"})
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._closed.wait(), timeout=3.0)
         finally:
-            if self._listener:
-                self._listener.cancel()
-            try:
-                await self._ctx.__aexit__(None, None, None)
-            except Exception:
-                pass
+            for t in self._tasks:
+                t.cancel()
+            if self._ws is not None:
+                with contextlib.suppress(Exception):
+                    await self._ws.close()
+                self._ws = None
         return self.text

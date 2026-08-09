@@ -65,8 +65,8 @@ class Session:
         self.task_running = False
         self.step = 0
         self.seq = 0
-        self._dg_client = None
         self.voice_id = None
+        self.narrator = None  # agent.tts.Narrator, real mode with a key only
         self.say_seq = 0
         self.tts_queue: asyncio.Queue = asyncio.Queue()
         self.tts_gen = 0  # bumped on barge-in; stale queue items are skipped
@@ -121,9 +121,11 @@ class Session:
                         protocol.encode_binary(protocol.BIN_TTS, header, _mock_tone(say_id)),
                     )
                 elif tts.enabled():
-                    async for chunk in tts.stream_pcm(self.http, text, self.voice_id):
+                    if self.narrator is None:
+                        self.narrator = tts.Narrator(self.voice_id)
+                    async for chunk in self.narrator.synthesize(text):
                         if gen != self.tts_gen:
-                            break
+                            break  # barge-in: generator finally aborts the context
                         self.loop.call_soon_threadsafe(
                             self.outbox.put_nowait,
                             protocol.encode_binary(protocol.BIN_TTS, header, chunk),
@@ -149,12 +151,8 @@ class Session:
             return
         if self.utterance is None:
             from agent.stt import UtteranceSession
-            from deepgram import AsyncDeepgramClient
 
-            if self._dg_client is None:
-                self._dg_client = AsyncDeepgramClient()
             self.utterance = UtteranceSession(
-                self._dg_client,
                 on_partial=lambda t: self.emit("transcript", text=t, final=False),
             )
             await self.utterance.start()
@@ -354,12 +352,16 @@ async def handle(ws, token: str, mock: bool, active: dict):
                     session.emit("status", state="idle", step=session.step)
                 elif kind == "set_voice":
                     session.voice_id = frame.get("voice_id")
+                    if session.narrator is not None:
+                        session.narrator.set_voice(session.voice_id)
     except websockets.ConnectionClosed:
         pass
     finally:
         session.cancel_event.set()
         for t in tasks:
             t.cancel()
+        if session.narrator is not None:
+            await session.narrator.close()
         if session.http is not None:
             await session.http.aclose()
         if active.get("ws") is ws:

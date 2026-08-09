@@ -38,6 +38,7 @@ python main.py                        # REPL
 python main.py "open Safari and search for anthropic"   # one-shot
 python gateway.py                     # WS gateway for iPhone A (prints pairing QR)
 python gateway.py --mock              # protocol mock: no keys/permissions needed
+python integration_test.py            # real-API STT/TTS round trip (needs keys)
 ```
 
 ### macOS permissions (grant once, to your terminal app / IDE)
