@@ -2,7 +2,8 @@
 change anything here, update the doc and tell the iOS folks.
 
 Text WS messages are JSON control frames: {"type": "hello" | "ready" |
-"transcript" | "say" | "status" | "interrupt" | "audio_end", ...}.
+"voices" | "set_voice" | "transcript" | "say" | "status" | "interrupt" |
+"audio_end", ...}.
 
 Binary WS messages (both directions) share one layout:
 
@@ -17,7 +18,10 @@ import struct
 
 BIN_AUDIO = 0x01  # A -> Mac: 16 kHz mono s16le PCM. header: {} 
 BIN_VIDEO = 0x02  # Mac -> A: JPEG. header: {source: "mac"|"iphone", w, h, seq}
-BIN_TTS = 0x03    # Mac -> A: TTS audio (milestone 5). header: {codec, rate}
+BIN_TTS = 0x03    # Mac -> A: TTS audio for a say frame.
+#   header: {codec: "pcm_s16le", rate: 16000, say_id, done?: true}
+#   PCM chunks stream while synthesis runs; a final empty-payload frame with
+#   done=true marks the end of that say_id's audio.
 
 
 def encode_binary(ftype: int, header: dict, payload: bytes) -> bytes:

@@ -22,7 +22,9 @@ and the demo script.
    (screencapture at ~4 fps during tasks); ScreenCaptureKit helper for
    10–15 fps still to do.
 4. ⬜ Phone mode: iPhone Mirroring window detection, crop, Cmd+1/2/3, hints.
-5. ⬜ ElevenLabs TTS narration + voice picker.
+5. ✅ ElevenLabs TTS narration (streamed 16 kHz PCM behind each `say` frame,
+   `eleven_flash_v2_5`) + voice list for the onboarding picker. Mock mode
+   sends beep tones so the iOS audio path is testable without a key.
 6. ⬜ Extras: Live Activity → cloud agent → finale game.
 
 ## Mac agent quickstart

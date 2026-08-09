@@ -66,6 +66,11 @@ class Session:
         self.step = 0
         self.seq = 0
         self._dg_client = None
+        self.voice_id = None
+        self.say_seq = 0
+        self.tts_queue: asyncio.Queue = asyncio.Queue()
+        self.tts_gen = 0  # bumped on barge-in; stale queue items are skipped
+        self.http = None  # httpx.AsyncClient, real mode only
 
     # -- thread-safe emitters (agent loop runs in a worker thread) ----------
 
@@ -85,10 +90,58 @@ class Session:
         while True:
             await self.ws.send(await self.outbox.get())
 
+    # -- narration + TTS -----------------------------------------------------
+
+    def speak(self, text: str):
+        """Emit a say frame and queue its TTS audio. Thread-safe."""
+        self.say_seq += 1
+        self.emit("say", text=text, id=self.say_seq)
+        self.loop.call_soon_threadsafe(
+            self.tts_queue.put_nowait, (self.tts_gen, self.say_seq, text)
+        )
+
+    def barge_in(self):
+        """User started talking: drop all queued/streaming TTS."""
+        self.tts_gen += 1
+        while not self.tts_queue.empty():
+            self.tts_queue.get_nowait()
+
+    async def tts_worker(self):
+        from agent import tts
+
+        while True:
+            gen, say_id, text = await self.tts_queue.get()
+            if gen != self.tts_gen:
+                continue
+            header = {"codec": tts.CODEC, "rate": tts.SAMPLE_RATE, "say_id": say_id}
+            try:
+                if self.mock:
+                    self.loop.call_soon_threadsafe(
+                        self.outbox.put_nowait,
+                        protocol.encode_binary(protocol.BIN_TTS, header, _mock_tone(say_id)),
+                    )
+                elif tts.enabled():
+                    async for chunk in tts.stream_pcm(self.http, text, self.voice_id):
+                        if gen != self.tts_gen:
+                            break
+                        self.loop.call_soon_threadsafe(
+                            self.outbox.put_nowait,
+                            protocol.encode_binary(protocol.BIN_TTS, header, chunk),
+                        )
+            except Exception as e:
+                print(f"tts failed ({e}); say text was already sent")
+            finally:
+                self.loop.call_soon_threadsafe(
+                    self.outbox.put_nowait,
+                    protocol.encode_binary(protocol.BIN_TTS, {**header, "done": True}, b""),
+                )
+
     # -- audio -> STT --------------------------------------------------------
 
     async def on_audio(self, pcm: bytes):
         self.last_audio_at = time.monotonic()
+        if self.utterance is None:
+            self.barge_in()  # user speaking over narration: kill playback
         if self.mock:
             if self.utterance is None:
                 self.utterance = "mock"
@@ -116,7 +169,7 @@ class Session:
         else:
             text = await utt.finish()
         if not text:
-            self.emit("say", text="I didn't catch that.")
+            self.speak("I didn't catch that.")
             return
         self.emit("transcript", text=text, final=True)
         self.start_task(text)
@@ -154,19 +207,19 @@ class Session:
                     None,
                     lambda: agent_loop.run_task(
                         text,
-                        on_narration=lambda t: self.emit("say", text=t),
+                        on_narration=self.speak,
                         on_action=self._on_action,
                         cancel_event=cancel,
                     ),
                 )
-            self.emit("say", text=result)
+            self.speak(result)
         except Exception as e:
             from agent.loop import TaskCancelled
 
             if isinstance(e, TaskCancelled):
-                self.emit("say", text="Okay, stopping.")
+                self.speak("Okay, stopping.")
             else:
-                self.emit("say", text=f"Something went wrong: {e}")
+                self.speak(f"Something went wrong: {e}")
         finally:
             self.task_running = False
             streamer.cancel()
@@ -199,10 +252,25 @@ class Session:
         for line in script:
             if self.cancel_event.is_set():
                 return "Okay, stopping."
-            self.emit("say", text=line)
+            self.speak(line)
             self._on_action({"action": "left_click"})
             await asyncio.sleep(1.5)
         return "Done - Safari is showing the Anthropic homepage."
+
+
+def _mock_tone(say_id: int) -> bytes:
+    """0.35s sine beep (pitch varies per line) so iOS can test the TTS audio
+    path without an ElevenLabs key. 16 kHz mono s16le, same as real TTS."""
+    import array
+    import math
+
+    rate, dur, freq = 16000, 0.35, 380 + (say_id % 5) * 60
+    n = int(rate * dur)
+    samples = array.array("h", (
+        int(8000 * math.sin(2 * math.pi * freq * i / rate) * min(1, (n - i) / 800))
+        for i in range(n)
+    ))
+    return samples.tobytes()
 
 
 def _mock_frame(seq: int):
@@ -238,17 +306,37 @@ async def handle(ws, token: str, mock: bool, active: dict):
     active["ws"] = ws
 
     session = Session(ws, mock)
+    session.voice_id = hello.get("voice_id")
     print(f"● paired: {hello.get('device', 'unknown device')}"
-          f" (voice_id={hello.get('voice_id', '-')}){' [mock]' if mock else ''}")
-    from agent import screen
+          f" (voice_id={session.voice_id or '-'}){' [mock]' if mock else ''}")
+    from agent import screen, tts
 
     tasks = []
     try:
         mw, mh = (640, 416) if mock else screen.model_size()
         await ws.send(protocol.control("ready", server="voiceos-connect", screen={"w": mw, "h": mh}))
+
+        if mock:
+            voices = [{"id": f"mock-voice-{i}", "name": n, "preview_url": None}
+                      for i, n in enumerate(["Nova", "Atlas", "Luna"], 1)]
+        elif tts.enabled():
+            import httpx
+
+            session.http = httpx.AsyncClient()
+            try:
+                voices = await tts.list_voices(session.http)
+            except Exception as e:
+                print(f"voice list failed: {e}")
+                voices = []
+        else:
+            voices = []
+        if voices:
+            await ws.send(protocol.control("voices", items=voices))
+
         tasks = [
             asyncio.create_task(session.sender()),
             asyncio.create_task(session.silence_watchdog()),
+            asyncio.create_task(session.tts_worker()),
         ]
         async for message in ws:
             if isinstance(message, bytes):
@@ -262,13 +350,18 @@ async def handle(ws, token: str, mock: bool, active: dict):
                     await session.on_audio_end()
                 elif kind == "interrupt":
                     session.cancel_event.set()
+                    session.barge_in()
                     session.emit("status", state="idle", step=session.step)
+                elif kind == "set_voice":
+                    session.voice_id = frame.get("voice_id")
     except websockets.ConnectionClosed:
         pass
     finally:
         session.cancel_event.set()
         for t in tasks:
             t.cancel()
+        if session.http is not None:
+            await session.http.aclose()
         if active.get("ws") is ws:
             active["ws"] = None
         print("○ session closed")

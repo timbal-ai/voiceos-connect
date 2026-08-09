@@ -88,11 +88,13 @@ First frame must be `hello`; the gateway answers `ready`.
 
 | Frame | Direction | Fields |
 | --- | --- | --- |
-| `hello` | A → Mac | `token`, `voice_id`, `device` |
+| `hello` | A → Mac | `token`, `voice_id?`, `device` |
 | `ready` | Mac → A | `server`, `screen: {w, h}` |
+| `voices` | Mac → A | `items: [{id, name, preview_url}]` — sent after `ready`; `preview_url` is a plain https mp3 for the onboarding picker |
+| `set_voice` | A → Mac | `voice_id` — switch narration voice after pairing |
 | `audio_end` | A → Mac | none — sent on PTT release, finalizes the utterance (2 s of silence also finalizes) |
 | `transcript` | Mac → A | `text`, `final: bool` |
-| `say` | Mac → A | `text` (narration; streamed TTS audio follows in milestone 5) |
+| `say` | Mac → A | `text`, `id` — narration line; its TTS audio streams as `0x03` binary frames tagged `say_id: id` |
 | `status` | Mac → A | `state: running\|idle`, `step`, `action?`, `task?` (drives Live Activity) |
 | `interrupt` | A → Mac | none — barge-in / cancel current task |
 
@@ -107,7 +109,12 @@ rest          payload
 
 - `0x01` audio: header `{}`, payload 16 kHz mono s16le PCM chunks.
 - `0x02` video: header `{source: "mac"|"iphone", w, h, seq}`, payload JPEG.
-- `0x03` TTS: milestone 5, header `{codec, rate}`.
+- `0x03` TTS: header `{codec: "pcm_s16le", rate: 16000, say_id, done?}`,
+  payload PCM chunks streamed during synthesis; an empty-payload frame with
+  `done: true` closes that `say_id`. Same 16 kHz rate as the mic path, so it
+  plays through the same `AVAudioEngine`. Starting to talk (PTT) or sending
+  `interrupt` cancels queued/streaming TTS server-side; the app should also
+  stop playback locally the moment PTT goes down.
 
 New commands mid-task are allowed: a final transcript arriving while a task
 runs cancels it and starts the new one (barge-in semantics).
