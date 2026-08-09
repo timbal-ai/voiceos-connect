@@ -1,0 +1,138 @@
+# VoiceOS Connect — Demo Blueprint
+
+**Concept:** One voice, two devices. You hold the Action Button on iPhone A and
+speak. A Mac runs a Claude computer-use agent that executes on macOS, and when
+the task needs a phone, it opens iPhone Mirroring and operates iPhone B live.
+Everything the agent does streams back to iPhone A in real time, and the agent
+narrates its progress out loud in the voice you picked.
+
+Demo-only constraints accepted: no App Store review, TestFlight/dev builds,
+pre-logged-in accounts, rehearsed network.
+
+## Hardware topology
+
+| Device | Role | Why |
+| --- | --- | --- |
+| iPhone A | Voice remote + live viewer | Runs the app. Just a mic, speaker, and screen — zero iOS restrictions apply because it automates nothing locally. |
+| Mac (Apple silicon) | Agent host | Runs the brain (Claude loop), the hands (input events), the eyes (screen capture), and the voice (STT/TTS). |
+| iPhone B | Target phone | Same Apple ID as the Mac, locked, on the table. Controlled through the iPhone Mirroring window. |
+| (Optional) prop phone | Receives the WhatsApp live | Ringer up. |
+
+**Why two iPhones (critical):** iPhone Mirroring only works while the target
+phone is locked and not in use. The remote phone is actively in use during the
+demo. Same phone for both roles = constant session drops.
+
+Requirements: macOS Sequoia+, Apple silicon; iPhone B on iOS 18+, same Apple
+ID, Bluetooth + Wi-Fi on, near the Mac. **Region caveat: iPhone Mirroring has
+historically been unavailable on EU-region accounts (DMA). Verify before any
+demo in Spain, or use a US-region Apple ID on the demo pair.** iPhone A and
+Mac on the same LAN (or the Mac's own hotspot).
+
+## Mac host (`mac/`) — five modules
+
+1. **Gateway** — WebSocket server (one session at a time). JSON control frames
+   + binary frames (audio, JPEG). Auth = shared token QR-scanned at pairing.
+2. **Voice pipeline** — Deepgram streaming STT (partials forwarded to iPhone A
+   so the user sees words appear as they speak). ElevenLabs TTS, one voice ID
+   per persona (picked at onboarding). Barge-in: any incoming audio chunk
+   while TTS plays → kill playback, treat as interruption. Narration: after
+   each meaningful agent step, one line → TTS → iPhone A.
+3. **Claude agent loop** *(built — `mac/agent/`)* — screenshot → action →
+   execute → repeat. `computer_20251124` tool, `claude-sonnet-5`. Downscaled
+   captures, clicks scaled back to native. Quartz CGEvent input via pyautogui.
+   System prompt carries app-specific hints; deterministic prompts are what
+   make live demos survive.
+4. **Screen streamer** — ScreenCaptureKit → JPEG at 10–15 fps, ~50–60%
+   quality → binary WS frames tagged `source: mac | iphone`. In phone mode,
+   crop to the iPhone Mirroring window. WebRTC/LiveKit is the upgrade path;
+   don't start there.
+5. **Phone mode** — a mode of module 3, not a new system. `open -a "iPhone
+   Mirroring"`, find the window rect via `CGWindowListCopyWindowInfo`, crop
+   every screenshot to it. Shortcuts the agent must know: **Cmd+1** home,
+   **Cmd+2** app switcher, **Cmd+3** Spotlight. Open apps via Spotlight +
+   typing, never icon hunting. If the window disappears (phone picked up /
+   out of range), the agent says so instead of clicking into the void.
+
+## iPhone A app (`ios/`) — deliberately dumb
+
+All intelligence lives on the Mac; the app is a mic, a speaker, and a screen.
+
+- **SwiftUI.** Onboarding: play 3–4 voice samples, pick one, optionally name
+  it → sends `voice_id` to the Mac.
+- **Session screen:** big hold-to-talk button, live transcript ribbon, live
+  Mac/phone stream filling the rest. Tap stream to zoom.
+- **Pairing:** scan a QR the Mac prints (`ws://<lan-ip>:<port>/<token>`).
+- **Audio:** `AVAudioSession` `.playAndRecord` + `.voiceChat` mode (hardware
+  echo cancellation). Capture 16 kHz mono PCM via `AVAudioEngine`, ship raw
+  chunks over the WS. No on-device STT. Playback: streamed TTS PCM through
+  the same engine. Releasing PTT or speaking again = barge-in signal.
+- **Action Button:** App Intent `Talk to VoiceOS` with `openAppWhenRun =
+  true`; user assigns it via Settings/Shortcuts. Works from the lock screen:
+  press → app opens → PTT armed.
+- **Live view:** decode incoming JPEG frames to a UIImage/Metal layer.
+  ~12 fps is smooth enough; latency matters more than framerate.
+- **Live Activity + Dynamic Island:** while a task runs, show agent status
+  ("Step 3 — typing message in WhatsApp"). Keeps narrating if the phone locks.
+- **Distribution:** TestFlight (paid account). No special entitlements.
+
+## Wire protocol (WebSocket)
+
+JSON control frames; binary frames carry a 1-byte type prefix.
+
+| Frame | Direction | Payload |
+| --- | --- | --- |
+| `hello` | A → Mac | token, voice_id, device name |
+| `audio_chunk` (bin) | A → Mac | 16 kHz mono PCM |
+| `transcript` | Mac → A | partial/final text |
+| `say` | Mac → A | text + streamed TTS audio (bin follows) |
+| `frame` (bin) | Mac → A | JPEG + `{source: mac\|iphone, w, h}` |
+| `status` | Mac → A | step, tool, target app (drives Live Activity) |
+| `interrupt` | A → Mac | barge-in / cancel current task |
+
+## Extras
+
+- **Multi-agent personas** — orchestrator routes tasks to named agents, each
+  with its own voice. Local agents run sequentially (one pair of hands); the
+  parallel one is a cloud agent (Anthropic computer-use reference container,
+  headless browser) streaming to iPhone A too.
+- **Finale** — "build me a little game and play it": agent writes a ~60-line
+  canvas game to a local HTML file, opens it, plays a round. Cut if tight.
+
+## Demo script (~4 min)
+
+1. Onboarding on iPhone A: pick a voice. (10 s of charm.)
+2. Action Button: "Search Google for the Scaling Enterprise AI event in San
+   Francisco and open the page."
+3. "Now connect to my mobile." → Mirroring window opens, iPhone B wakes up on
+   the Mac screen. Gasp moment — sell it with a pause.
+4. "Clean up my notifications." → swipes them away one by one.
+5. "Send a WhatsApp to Joshua: we just want to hug him." → his phone buzzes
+   in the room. Second gasp.
+6. (Optional) finale game.
+7. Close: "One voice. Two devices. Nothing was faked."
+
+Show what it does, never mention what it can't.
+
+## Risks and rehearsal notes
+
+- Each computer-use step is ~2–4 s. Narration + live stream turn dead air
+  into theater. Never demo a task longer than ~6 steps.
+- Networking: Mac hotspot or travel router, never venue Wi-Fi. USB-C tether
+  iPhone A as backup.
+- iPhone B prep: logged into WhatsApp/Instagram/Spotify, notifications
+  seeded, DND off, stays locked, Bluetooth on, within a meter of the Mac.
+- Mirroring drops if iPhone B is picked up — tape it to the table if needed.
+- Determinism: pin exact spoken prompts, rehearse each 10×, pre-position
+  app windows.
+- Kill switch: releasing PTT + "stop" sends `interrupt`; Mac hotkey freezes
+  CGEvent output instantly (milestone 1: cursor to top-left corner).
+- Fallback: recorded successful run behind a long-press on iPhone A.
+
+## Build order (weekend-sized)
+
+1. ✅ Mac agent loop driving macOS + typed text commands — no phone yet.
+2. ⬜ WS gateway + iPhone A app with PTT audio → STT on Mac → loop.
+3. ⬜ Screen streaming to iPhone A.
+4. ⬜ Phone mode: mirroring window detection, crop, shortcuts, hints.
+5. ⬜ TTS narration + voice picker.
+6. ⬜ Extras in order of appetite: Live Activity → cloud agent → finale.
