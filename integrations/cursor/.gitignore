@@ -1,0 +1,6 @@
+node_modules/
+agent-runs.json
+.DS_Store
+.env
+.tmp-voiceos/
+focus.json

@@ -1,0 +1,223 @@
+{
+  "schemaVersion": 1,
+  "id": "com.dberges.notch-whatsapp",
+  "version": "1.0.0",
+  "name": "WhatsApp",
+  "summary": "Read and send WhatsApp messages by voice — pairs with your phone via a code, no QR scan.",
+  "icon": "icon.png",
+  "publisher": {
+    "id": "pub_dberges",
+    "name": "David Berges"
+  },
+  "runtime": {
+    "kind": "local-mcp",
+    "command": "bun",
+    "args": [
+      "server.ts"
+    ]
+  },
+  "permissions": [
+    {
+      "kind": "network",
+      "domains": [
+        "web.whatsapp.com",
+        "whatsapp.net",
+        "mmg.whatsapp.net",
+        "static.whatsapp.net"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "link_whatsapp",
+      "title": "Link WhatsApp",
+      "description": "Link this Mac to the user's WhatsApp account with an 8-character pairing code (no QR scan). Use when the user asks to connect, link, set up, log in to, or re-pair WhatsApp, or when another WhatsApp tool failed because no account is linked.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "The user's own WhatsApp phone number with country code, digits only, e.g. 34612345678."
+          },
+          "relink": {
+            "type": "boolean",
+            "description": "Re-pair even if already linked, wiping the current session and re-syncing history from scratch. Set when the user explicitly asks to relink, re-pair, or re-sync WhatsApp."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Validate without contacting WhatsApp. Never set unless the user asks."
+          }
+        },
+        "required": [
+          "phone"
+        ]
+      },
+      "confirmation": {
+        "schemaVersion": 1,
+        "root": {
+          "type": "card",
+          "title": "Link WhatsApp",
+          "children": [
+            {
+              "type": "text",
+              "text": "Pairs this Mac as a linked device on your WhatsApp account. You'll get a code to type into WhatsApp on your phone."
+            },
+            {
+              "type": "textField",
+              "bind": "{{phone}}",
+              "label": "Your phone number (with country code)"
+            }
+          ],
+          "footer": [
+            {
+              "type": "actions",
+              "items": [
+                {
+                  "label": "Cancel",
+                  "role": "cancel"
+                },
+                {
+                  "label": "Get pairing code",
+                  "role": "confirm",
+                  "color": "accent"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "whatsapp_status",
+      "title": "WhatsApp status",
+      "description": "Check whether WhatsApp is linked and connected, which number is paired, how many chats and unreads are synced, and who the LAST SENT message went to. Use when the user asks 'is WhatsApp linked/connected/working', 'where/who did my last message go to', after pairing, or to debug why messages aren't flowing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "unread_messages",
+      "title": "Unread messages",
+      "description": "List WhatsApp chats with unread messages, including the latest message text of each. Use when the user asks 'any new WhatsApp messages', 'what did I miss', 'do I have unreads', or wants a WhatsApp inbox summary.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "read_chat",
+      "title": "Read chat",
+      "description": "Read the recent messages of one WhatsApp chat (person or group) by name or phone number, marking them as read on the user's phone. Use when the user asks 'what did X say', 'read my chat with X', 'catch me up on the family group', or wants the conversation history with someone.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat": {
+            "type": "string",
+            "description": "Chat to read: a contact name, group name, or phone number with country code."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max messages to return (default 20)."
+          }
+        },
+        "required": [
+          "chat"
+        ]
+      }
+    },
+    {
+      "name": "list_chats",
+      "title": "List chats",
+      "description": "List the user's most recent WhatsApp chats (people and groups) with the last message of each. Use when the user asks 'what are my recent chats', 'who have I been talking to', wants to browse conversations, or when a contact search failed and you need to see what chats actually exist.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "Max chats to return (default 20, max 50)."
+          }
+        }
+      }
+    },
+    {
+      "name": "find_contact",
+      "title": "Find contact",
+      "description": "Search the user's WhatsApp contacts and groups by (partial) name or phone number and return exact names with phone numbers. ALWAYS use this before send_message when you are not certain the recipient name is exact and unique — sending requires an exact name or phone number. Also use when the user asks 'do I have X on WhatsApp' or 'what's X's number'.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Name, partial name, or phone number to search for, e.g. 'adri' or '626564604'."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "send_message",
+      "title": "Send message",
+      "description": "Send a WhatsApp text message to a contact, group, or phone number. Use when the user asks to message, text, reply to, or tell someone something on WhatsApp, e.g. 'whatsapp Marc that I'm running late'. Recipient rules: a phone number always works directly. For a name, call find_contact ONCE and use the returned sendAs value as 'to'. Never call find_contact more than once per send — if it found one person, send immediately; if several, ask the user; if none, ask for the number. Sending is only complete after THIS tool returns ok — describing a draft is not sending.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "Recipient in the form 'Name (+34612345678)' as returned by find_contact. Also accepted: a bare phone number with country code, an EXACT unique contact name, or an EXACT group name."
+          },
+          "body": {
+            "type": "string",
+            "description": "The message text to send."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Resolve the recipient without sending. Never set unless the user asks."
+          }
+        },
+        "required": [
+          "to",
+          "body"
+        ]
+      },
+      "confirmation": {
+        "schemaVersion": 1,
+        "root": {
+          "type": "card",
+          "title": "Send WhatsApp message",
+          "children": [
+            {
+              "type": "textField",
+              "bind": "{{to}}",
+              "label": "To"
+            },
+            {
+              "type": "textField",
+              "bind": "{{body}}",
+              "label": "Message",
+              "multiline": true
+            }
+          ],
+          "footer": [
+            {
+              "type": "actions",
+              "items": [
+                {
+                  "label": "Cancel",
+                  "role": "cancel"
+                },
+                {
+                  "label": "Send",
+                  "role": "confirm",
+                  "color": "accent"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

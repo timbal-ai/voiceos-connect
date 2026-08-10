@@ -1,0 +1,17 @@
+{
+  "name": "notch-whatsapp",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "baileys": "^7.0.0-rc14",
+    "pino": "^10.1.0",
+    "zod": "^4.4.3"
+  }
+}

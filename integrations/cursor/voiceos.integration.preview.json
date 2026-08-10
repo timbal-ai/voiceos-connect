@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "description": "Development-only sample inputs used by bun verify.ts and the VoiceOS Integration Studio preview.",
+  "tools": {
+    "run_coding_agent": {
+      "args": {
+        "task": "Add a dark-mode toggle to the settings page",
+        "repo": "/tmp",
+        "dry_run": true
+      },
+      "expectedGlanceBlocks": 2
+    },
+    "agent_status": {
+      "args": {},
+      "expectedGlanceBlocks": 2
+    },
+    "continue_agent": {
+      "args": { "task": "also add a comment", "dry_run": true },
+      "expectedGlanceBlocks": 2
+    },
+    "cancel_agent": {
+      "args": {},
+      "expectedGlanceBlocks": 2
+    },
+    "focus_repo": {
+      "args": { "repo": "/tmp", "dry_run": true },
+      "expectedGlanceBlocks": 2
+    },
+    "ask_cursor": {
+      "args": {
+        "question": "What does this repo do?",
+        "repo": "/tmp",
+        "dry_run": true
+      },
+      "expectedGlanceBlocks": 2
+    },
+    "list_repos": {
+      "args": {},
+      "expectedGlanceBlocks": 2
+    }
+  }
+}

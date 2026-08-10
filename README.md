@@ -10,12 +10,17 @@ and the demo script.
 
 - `mac/` — Python agent host: computer-use loop, WS gateway, STT/TTS,
   phone mode, cloud agent.
-- `integration/` — **VoiceOS notch integration**: speak a phone task into the
-  notch, the iPhone Mirroring window snaps to top-center under the notch (the
-  "notch grows a live phone" effect) and the agent operates it. Install in
-  VoiceOS: Settings → Agent Mode → Integrations → Install from folder →
-  pick `integration/`. Needs the `mac/` venv set up first; `bun verify.ts`
-  inside the folder must pass.
+- `integrations/` — **VoiceOS notch integrations** (install each in VoiceOS:
+  Settings → Agent Mode → Integrations → Install from folder → pick the
+  specific subfolder; `bun verify.ts` inside it must pass):
+  - `integrations/phone/` — speak a phone task into the notch, the iPhone
+    Mirroring window snaps to top-center under the notch (the "notch grows a
+    live phone" effect) and the agent operates it. Needs the `mac/` venv.
+  - `integrations/cursor/` — voice-driven Cursor coding agent (repos, PRs,
+    run status).
+  - `integrations/whatsapp/` — WhatsApp from the notch: link via QR, read
+    chats and unreads, find contacts, send messages. Session material
+    (`wa-auth/`, `wa-store.json`) stays local and gitignored.
 - `ios-app/` — iPhone app + WDA full-device rig (Isaac).
 
 ## Milestone status (weekend build order)

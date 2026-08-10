@@ -1,0 +1,82 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  * { scrollbar-width: none; box-sizing: border-box; }
+  ::-webkit-scrollbar { display: none; }
+  :root { --k-radius:26px; --ink:rgba(255,255,255,.96); --sub:rgba(255,255,255,.45);
+          --me:#005c4b; --me-ink:#e7fce3; --them:rgba(255,255,255,.08); --them-ink:rgba(255,255,255,.94);
+          --accent:#25d366; }
+  html[data-theme="light"] { --ink:rgba(0,0,0,.92); --sub:rgba(0,0,0,.45);
+          --me:#d9fdd3; --me-ink:#0b3d2e; --them:rgba(0,0,0,.06); --them-ink:rgba(0,0,0,.9); }
+  body { margin:0; background:transparent; color:var(--ink);
+         font:13.5px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif; }
+  .card { padding:12px 13px 13px; }
+  .top { display:flex; align-items:center; gap:9px; margin-bottom:10px; }
+  .avatar { width:24px; height:24px; border-radius:50%; background:linear-gradient(135deg,#25d366,#128c7e);
+            display:grid; place-items:center; color:#fff; font-size:12px; font-weight:700; flex:none;
+            box-shadow:0 0 14px rgba(37,211,102,.35); }
+  .ttl { font-weight:650; letter-spacing:.2px; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trail { margin-left:auto; font-size:10.5px; color:var(--sub); text-transform:uppercase; letter-spacing:.6px; flex:none; }
+  .msgs { display:flex; flex-direction:column; gap:5px; max-height:340px; overflow:auto; }
+  .row { display:flex; opacity:0; transform:translateY(6px); transition:opacity .3s ease, transform .3s ease; }
+  .row.in { opacity:1; transform:none; }
+  .row.me { justify-content:flex-end; }
+  .bubble { max-width:82%; padding:7px 10px 6px; border-radius:14px; position:relative; }
+  .me .bubble { background:var(--me); color:var(--me-ink); border-bottom-right-radius:4px; }
+  .them .bubble { background:var(--them); color:var(--them-ink); border-bottom-left-radius:4px; }
+  .sender { font-size:11px; font-weight:650; margin-bottom:2px; }
+  .text { word-wrap:break-word; white-space:pre-wrap; }
+  .meta { display:block; text-align:right; font-size:9.5px; opacity:.55; margin-top:3px; font-variant-numeric:tabular-nums; }
+  .empty { color:var(--sub); font-size:12.5px; padding:6px 2px; }
+</style>
+<div class="card">
+  <div class="top">
+    <span class="avatar" id="avatar">·</span>
+    <span class="ttl" id="name">WhatsApp</span>
+    <span class="trail" id="trail"></span>
+  </div>
+  <div class="msgs" id="msgs"></div>
+</div>
+<script>
+  var HUES = [16, 96, 200, 260, 320, 40, 175];
+  var D = { chat:"", isGroup:false, messages:[] };
+  addEventListener("message", function(e){
+    var m = e.data; if (!m || m.type !== "voiceos:init") return;
+    document.documentElement.dataset.theme = (m.theme && m.theme.mode) || "dark";
+    if (m.radius) document.documentElement.style.setProperty("--k-radius", m.radius+"px");
+    D = Object.assign(D, m.data || {});
+    render();
+  });
+  function esc(s){ return String(s).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
+  function hue(name){ var h=0; for (var i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))>>>0; return HUES[h%HUES.length]; }
+  function render(){
+    document.getElementById("name").textContent = D.chat || "WhatsApp";
+    document.getElementById("avatar").textContent = (D.chat || "W").trim().charAt(0).toUpperCase();
+    var msgs = D.messages || [];
+    document.getElementById("trail").textContent = msgs.length ? msgs.length + " messages" : "";
+    var wrap = document.getElementById("msgs"); wrap.innerHTML = "";
+    if (!msgs.length){
+      wrap.innerHTML = '<div class="empty">No messages yet.</div>';
+      report(); return;
+    }
+    msgs.slice(-14).forEach(function(m, i){
+      var row = document.createElement("div");
+      row.className = "row " + (m.fromMe ? "me" : "them");
+      var sender = "";
+      if (D.isGroup && !m.fromMe && m.from){
+        sender = '<div class="sender" style="color:hsl('+hue(m.from)+' 70% 65%)">'+esc(m.from)+'</div>';
+      }
+      row.innerHTML = '<div class="bubble">'+sender+'<div class="text">'+esc(m.text||"")+'</div>'+
+        '<span class="meta">'+esc(m.time||"")+'</span></div>';
+      wrap.appendChild(row);
+      setTimeout(function(){ row.classList.add("in"); wrap.scrollTop = wrap.scrollHeight; report(); }, 30 + i*45);
+    });
+    report();
+  }
+  function report(){
+    if (document.hidden || !document.documentElement.offsetWidth) return;
+    var h = Math.ceil(document.querySelector(".card").getBoundingClientRect().height);
+    if (h >= 8) parent.postMessage({ type:"voiceos:resize", height:h+2 }, "*");
+  }
+  new ResizeObserver(report).observe(document.documentElement);
+</script>

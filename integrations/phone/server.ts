@@ -32,7 +32,7 @@ const jsonResult = (payload: unknown) => ({
 const trim = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n - 1) + "…");
 
 // --- Python bridge ------------------------------------------------------------
-const MAC_DIR = fileURLToPath(new URL("../mac/", import.meta.url));
+const MAC_DIR = fileURLToPath(new URL("../../mac/", import.meta.url));
 const PYTHON = join(MAC_DIR, ".venv", "bin", "python3");
 
 type PhoneRun = {

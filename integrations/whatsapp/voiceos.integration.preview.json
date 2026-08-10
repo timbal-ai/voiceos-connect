@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "description": "Development-only sample inputs used by bun verify.ts and the VoiceOS Integration Studio preview. verify.ts runs the server with WA_PASSIVE=1 so nothing here touches the network or a real WhatsApp session.",
+  "tools": {
+    "link_whatsapp": {
+      "args": {
+        "phone": "34612345678",
+        "dry_run": true
+      },
+      "expectedGlanceBlocks": 2
+    },
+    "whatsapp_status": {
+      "args": {},
+      "expectedGlanceBlocks": 2
+    },
+    "unread_messages": {
+      "args": {},
+      "expectedGlanceBlocks": 2
+    },
+    "list_chats": {
+      "args": {},
+      "expectedGlanceBlocks": 2
+    },
+    "find_contact": {
+      "args": {
+        "query": "adri"
+      },
+      "expectedGlanceBlocks": 2
+    },
+    "read_chat": {
+      "args": {
+        "chat": "Family"
+      },
+      "expectedGlanceBlocks": 2
+    },
+    "send_message": {
+      "args": {
+        "to": "Sample Contact (+34612345678)",
+        "body": "The first version is working.",
+        "dry_run": true
+      },
+      "expectedGlanceBlocks": 2
+    }
+  }
+}

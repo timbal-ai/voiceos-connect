@@ -1,0 +1,281 @@
+{
+  "schemaVersion": 1,
+  "id": "com.dberges.notch-coder",
+  "version": "1.0.0",
+  "name": "Cursor",
+  "summary": "Speak a coding task into the notch and a Cursor agent ships it: code changes, even a PR.",
+  "icon": "icon.png",
+  "publisher": {
+    "id": "pub_dberges",
+    "name": "David Berges"
+  },
+  "runtime": {
+    "kind": "local-mcp",
+    "command": "bun",
+    "args": [
+      "server.ts"
+    ]
+  },
+  "auth": {
+    "kind": "apiKey",
+    "fields": [
+      {
+        "key": "CURSOR_API_KEY",
+        "label": "Cursor API key",
+        "secret": true,
+        "placeholder": "key_…",
+        "required": true,
+        "description": "Create one at cursor.com/dashboard → Integrations → API keys."
+      }
+    ]
+  },
+  "preferences": [
+    {
+      "name": "SCAN_DIRS",
+      "title": "Repo scan folders",
+      "description": "Comma-separated folders scanned for git repositories.",
+      "type": "text",
+      "default": "~/Desktop/timbal-ai,~/Projects,~/Developer"
+    },
+    {
+      "name": "MODEL",
+      "title": "Cursor model",
+      "description": "Default model for the coding agent. You can also pick per-task on the confirmation card.",
+      "type": "select",
+      "default": "composer-2.5",
+      "options": [
+        { "label": "Composer 2.5 (fast)", "value": "composer-2.5" },
+        { "label": "Opus 5", "value": "claude-opus-5" },
+        { "label": "Sonnet 5", "value": "claude-sonnet-5" },
+        { "label": "GPT-5.6 Sol", "value": "gpt-5.6-sol" },
+        { "label": "Fable 5", "value": "claude-fable-5" },
+        { "label": "Gemini 3.1 Pro", "value": "gemini-3.1-pro" },
+        { "label": "Grok 4.5", "value": "grok-4.5" }
+      ]
+    }
+  ],
+  "permissions": [
+    {
+      "kind": "network",
+      "domains": [
+        "api.cursor.com",
+        "api2.cursor.sh",
+        "api3.cursor.sh",
+        "cursor.com",
+        "downloads.cursor.com",
+        "github.com"
+      ]
+    },
+    {
+      "kind": "background"
+    },
+    {
+      "kind": "notify"
+    }
+  ],
+  "tools": [
+    {
+      "name": "run_coding_agent",
+      "title": "Run coding agent",
+      "description": "Start a Cursor AI coding agent that CHANGES code in a git repository (edits files, on this Mac or a Cursor cloud VM) and can open a pull request. Use only when the user wants to modify code: fix, implement, build, refactor, add, rename, delete, or 'ship it and open a PR'. Do NOT use for questions about how the code works or where something is (use ask_cursor for those), and do NOT use for general questions unrelated to the user's repositories (let VoiceOS answer those).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The coding instruction, e.g. 'Add a dark-mode toggle to the settings page'. Keep the user's own wording."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Which repo or folder to work in. ALWAYS set this when the user names any repo, folder, project, or directory (e.g. 'ace', 'voiceos-demo', a path, or a GitHub URL). Omit ONLY when no name is mentioned, to use the focused repo."
+          },
+          "model": {
+            "type": "string",
+            "description": "Cursor model ID, e.g. composer-2.5 (fast, default), claude-opus-5, claude-sonnet-5, gpt-5.6-sol, claude-fable-5, gemini-3.1-pro. Only set when the user names a model."
+          },
+          "open_pr": {
+            "type": "boolean",
+            "description": "When true the agent commits, pushes a branch, and opens a GitHub pull request when done. Default false."
+          },
+          "use_cloud": {
+            "type": "boolean",
+            "description": "Run on a Cursor cloud VM against the user's GitHub repo instead of locally. Use when the user says 'in the cloud' or 'cloud agent'. Default false."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Validate the setup without starting an agent. Never set this unless the user explicitly asks for a dry run."
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "execution": {
+        "mode": "background",
+        "estimatedDurationMs": 180000
+      },
+      "confirmation": {
+        "schemaVersion": 1,
+        "root": {
+          "type": "card",
+          "title": "Run coding agent",
+          "children": [
+            {
+              "type": "textField",
+              "bind": "{{task}}",
+              "label": "Task",
+              "multiline": true
+            },
+            {
+              "type": "textField",
+              "bind": "{{repo}}",
+              "label": "Repository (name, path, or GitHub URL)"
+            },
+            {
+              "type": "text",
+              "text": "Leave blank to use your focused repo."
+            },
+            {
+              "type": "select",
+              "bind": "{{model}}",
+              "label": "Model",
+              "options": [
+                { "label": "Composer 2.5 (fast)", "value": "composer-2.5" },
+                { "label": "Opus 5", "value": "claude-opus-5" },
+                { "label": "Sonnet 5", "value": "claude-sonnet-5" },
+                { "label": "GPT-5.6 Sol", "value": "gpt-5.6-sol" },
+                { "label": "Fable 5", "value": "claude-fable-5" },
+                { "label": "Gemini 3.1 Pro", "value": "gemini-3.1-pro" },
+                { "label": "Grok 4.5", "value": "grok-4.5" }
+              ]
+            },
+            {
+              "type": "toggle",
+              "bind": "{{open_pr}}",
+              "label": "Open a pull request when done"
+            },
+            {
+              "type": "toggle",
+              "bind": "{{use_cloud}}",
+              "label": "Run on Cursor cloud"
+            }
+          ],
+          "footer": [
+            {
+              "type": "actions",
+              "items": [
+                {
+                  "label": "Cancel",
+                  "role": "cancel"
+                },
+                {
+                  "label": "Ship it",
+                  "role": "confirm",
+                  "color": "accent"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "continue_agent",
+      "title": "Continue agent",
+      "description": "Give a follow-up instruction to the most recent Cursor coding agent, keeping full context of what it just did. Use when the user says 'also do X', 'now add Y', 'and update the tests', 'change it to Z', or otherwise refines the last coding task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task": { "type": "string", "description": "The follow-up instruction, in the user's own words." },
+          "open_pr": { "type": "boolean", "description": "Also open a pull request when done. Default false." }
+        },
+        "required": ["task"]
+      },
+      "execution": { "mode": "background", "estimatedDurationMs": 180000 },
+      "confirmation": {
+        "schemaVersion": 1,
+        "root": {
+          "type": "card",
+          "title": "Continue agent",
+          "children": [
+            { "type": "textField", "bind": "{{task}}", "label": "Follow-up", "multiline": true },
+            { "type": "text", "text": "Continues the most recent agent in the same repo." },
+            { "type": "toggle", "bind": "{{open_pr}}", "label": "Open a pull request when done" }
+          ],
+          "footer": [
+            {
+              "type": "actions",
+              "items": [
+                { "label": "Cancel", "role": "cancel" },
+                { "label": "Continue", "role": "confirm", "color": "accent" }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "cancel_agent",
+      "title": "Cancel agent",
+      "description": "Stop a Cursor coding agent that is currently running. Use when the user says 'stop', 'cancel', 'abort', 'never mind', or 'kill the agent'.",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "focus_repo",
+      "title": "Focus repo",
+      "description": "Set the repository the user is working on, so later commands don't need to name it. Use when the user says 'work on X', 'focus on X', 'switch to X', 'let's work in X', or otherwise picks a repo to keep using.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "The repo to focus: a repo name (e.g. 'voiceos-demo') or an absolute path."
+          }
+        },
+        "required": ["repo"]
+      }
+    },
+    {
+      "name": "ask_cursor",
+      "title": "Ask about code",
+      "description": "Answer a question about the user's OWN code by having Cursor read the repository. Read-only: it never changes files and never opens a PR. Use when the user asks how their code works, where something is defined, what a repo or file does, why something behaves a certain way, or to explain or summarize part of their codebase. Do NOT use for general programming knowledge unrelated to their repos (let VoiceOS answer those), and do NOT use when the user wants to change code (use run_coding_agent).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "The question about the user's code, in their own words. Do not put repo or folder names only here; also extract them into the repo argument."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Which repo or folder to read. ALWAYS set this when the user names any repo, folder, project, or directory (e.g. 'ace', 'the timbal repo', 'voiceos-demo'). Omit ONLY when no name is mentioned, to use the focused repo."
+          }
+        },
+        "required": ["question"]
+      }
+    },
+    {
+      "name": "list_repos",
+      "title": "List repos",
+      "description": "List the git repositories on this Mac that the coding agent can work on. Use when the user asks what repos, projects, or codebases they have, wants to browse or pick a repository, or asks 'which repo'.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Optional name filter, e.g. 'timbal'. Omit to list the most recently touched repos."
+          }
+        }
+      }
+    },
+    {
+      "name": "agent_status",
+      "title": "Agent status",
+      "description": "Check the progress and results of Cursor coding agents: ones started here by voice and cloud agents from the user's Cursor account (IDE or web). Use when the user asks 'is it done', 'how's the agent doing', 'what's Cursor working on', 'what agents are running', or wants a status update on coding tasks.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
