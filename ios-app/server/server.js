@@ -9,6 +9,13 @@ const PORT = process.env.PORT || 8080;
 const WDA_PORT = 8100;  // WebDriverAgent control API on the phone, tunneled via iproxy
 const MJPEG_PORT = 9100; // WebDriverAgent's built-in full-device MJPEG video stream
 
+// Video tuning (WDA caps framerate at 60). Default 30fps — 60 over USB/iproxy
+// flaps the MJPEG socket. activeFps can climb toward TARGET when the link is calm.
+const MJPEG_FPS_TARGET = Number(process.env.MJPEG_FPS || 30);
+const MJPEG_QUALITY = Number(process.env.MJPEG_QUALITY || 25);
+const MJPEG_SCALE = Number(process.env.MJPEG_SCALE || 40);
+let activeFps = MJPEG_FPS_TARGET;
+
 // ---------- HTTP server (serves the viewer page) ----------
 const server = http.createServer((req, res) => {
   if (req.url === "/debug/foreground") {
@@ -18,7 +25,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const url = req.url === "/" ? "/index.html" : req.url;
+  const pathname = new URL(req.url, "http://localhost").pathname;
+  const url = pathname === "/" ? "/index.html" : pathname;
   const filePath = path.join(__dirname, "public", path.normalize(url).replace(/^(\.\.[\/\\])+/, ""));
   if (!filePath.startsWith(path.join(__dirname, "public"))) {
     res.writeHead(403);
@@ -49,8 +57,9 @@ let videoConnected = false;
 function relayFrame(jpeg) {
   lastFrame = jpeg;
   frameCount++;
+  // Drop frames when a viewer is backed up — prefer realtime over backlog.
   for (const v of viewers) {
-    if (v.readyState === v.OPEN && v.bufferedAmount < 1_000_000) {
+    if (v.readyState === v.OPEN && v.bufferedAmount < 256_000) {
       v.send(jpeg, { binary: true });
     }
   }
@@ -121,19 +130,27 @@ async function createSession() {
   const sz = await wdaFetch("GET", `/session/${wda.sessionId}/window/size`);
   wda.size = sz.value;
   // Tune the MJPEG stream, and turn off the post-action idle waits for snappy control.
-  await wdaFetch("POST", `/session/${wda.sessionId}/appium/settings`, {
+  await applyMjpegSettings(wda.sessionId);
+  wda.ready = true;
+  console.log(
+    `[wda] session ready ${wda.sessionId.slice(0, 8)}, screen ${wda.size.width}x${wda.size.height} pt` +
+      ` (mjpeg ${activeFps}fps q=${MJPEG_QUALITY} scale=${MJPEG_SCALE})`
+  );
+  broadcastStatus();
+}
+
+async function applyMjpegSettings(sid = wda.sessionId) {
+  if (!sid) return;
+  await wdaFetch("POST", `/session/${sid}/appium/settings`, {
     settings: {
-      mjpegServerFramerate: 20,
-      mjpegServerScreenshotQuality: 40,
-      mjpegScalingFactor: 50,
+      mjpegServerFramerate: activeFps,
+      mjpegServerScreenshotQuality: MJPEG_QUALITY,
+      mjpegScalingFactor: MJPEG_SCALE,
       waitForIdleTimeout: 0,
       animationCoolOffTimeout: 0,
       shouldUseCompactResponses: true,
     },
   }).catch(() => {});
-  wda.ready = true;
-  console.log(`[wda] session ready ${wda.sessionId.slice(0, 8)}, screen ${wda.size.width}x${wda.size.height} pt`);
-  broadcastStatus();
 }
 
 // Hot path: use the cached session without a validation round-trip. Staleness is
@@ -305,49 +322,116 @@ async function runGesture(msg) {
 const JPEG_SOI = Buffer.from([0xff, 0xd8]);
 const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 
+let videoReq = null;
+let videoRes = null;
+let videoRetryTimer = null;
+let videoBackoffMs = 250;
+let videoStableSince = 0;
+const videoDrops = []; // timestamps of recent drops, for adaptive FPS
+
+function scheduleVideoReconnect(reason) {
+  if (videoRetryTimer) return;
+  const delay = videoBackoffMs;
+  videoBackoffMs = Math.min(videoBackoffMs * 2, 4000);
+  videoRetryTimer = setTimeout(() => {
+    videoRetryTimer = null;
+    connectVideo();
+  }, delay);
+  if (reason) console.log(`[video] reconnect in ${delay}ms (${reason})`);
+}
+
+function destroyVideo(reason, fromReq = null, fromRes = null) {
+  // Ignore late events from a connection we've already replaced.
+  if (fromReq && videoReq && fromReq !== videoReq) return;
+  if (fromRes && videoRes && fromRes !== videoRes) return;
+  if (!videoReq && !videoRes && !videoConnected) {
+    scheduleVideoReconnect(reason || "drop");
+    return;
+  }
+
+  const wasConnected = videoConnected;
+  const req = videoReq;
+  const res = videoRes;
+  videoReq = null;
+  videoRes = null;
+  if (req) req.destroy();
+  if (res) res.destroy();
+
+  videoConnected = false;
+  if (wasConnected) {
+    console.log("[video] MJPEG stream lost");
+    broadcastStatus();
+    const now = Date.now();
+    videoDrops.push(now);
+    while (videoDrops.length && now - videoDrops[0] > 30_000) videoDrops.shift();
+    // Flapping → back off framerate so USB/iproxy can breathe.
+    if (videoDrops.length >= 3 && activeFps > 15) {
+      const next = Math.max(15, Math.round(activeFps * 0.7));
+      if (next < activeFps) {
+        activeFps = next;
+        console.log(`[video] flapping — lowering mjpeg to ${activeFps}fps`);
+        applyMjpegSettings().catch(() => {});
+      }
+    }
+  }
+  scheduleVideoReconnect(reason || "drop");
+}
+
 // The stream is multipart JPEG; we scan for SOI/EOI markers and emit whole frames.
 function connectVideo() {
+  if (videoReq || videoRes) return;
+
   const req = http.get(
     { host: "127.0.0.1", port: MJPEG_PORT, path: "/", timeout: 5000 },
     (res) => {
+      if (videoReq !== req) { res.destroy(); return; }
+      videoRes = res;
       videoConnected = true;
-      console.log("[video] MJPEG stream connected");
+      videoBackoffMs = 250;
+      videoStableSince = Date.now();
+      console.log(`[video] MJPEG stream connected (${activeFps}fps)`);
       broadcastStatus();
 
       let buffer = Buffer.alloc(0);
       res.on("data", (chunk) => {
-        buffer = Buffer.concat([buffer, chunk]);
-        // Guard against unbounded growth if markers never appear.
-        if (buffer.length > 8_000_000) buffer = Buffer.alloc(0);
+        if (buffer.length === 0) buffer = chunk;
+        else buffer = Buffer.concat([buffer, chunk]);
+        if (buffer.length > 4_000_000) buffer = Buffer.alloc(0);
 
         while (true) {
           const start = buffer.indexOf(JPEG_SOI);
-          if (start === -1) break;
-          const end = buffer.indexOf(JPEG_EOI, start + 2);
-          if (end === -1) {
-            if (start > 0) buffer = buffer.subarray(start);
-            break;
-          }
-          relayFrame(buffer.subarray(start, end + 2));
+          if (start === -1) { buffer = Buffer.alloc(0); break; }
+          if (start > 0) buffer = buffer.subarray(start);
+          const end = buffer.indexOf(JPEG_EOI, 2);
+          if (end === -1) break;
+          const frame = buffer.subarray(0, end + 2);
           buffer = buffer.subarray(end + 2);
+          relayFrame(frame);
         }
       });
 
-      res.on("end", dropVideo);
-      res.on("error", dropVideo);
+      res.on("end", () => destroyVideo("end", req, res));
+      res.on("error", () => destroyVideo("res-error", req, res));
+      res.on("close", () => destroyVideo("close", req, res));
     }
   );
-  req.on("error", dropVideo);
-  req.on("timeout", () => req.destroy());
+
+  videoReq = req;
+  req.on("error", () => destroyVideo("req-error", req, null));
+  req.on("timeout", () => destroyVideo("timeout", req, null));
 }
 
-function dropVideo() {
-  if (videoConnected) {
-    videoConnected = false;
-    console.log("[video] MJPEG stream lost");
-    broadcastStatus();
-  }
-}
+// Climb back toward the target FPS after the link has been quiet.
+setInterval(() => {
+  if (!videoConnected || !videoStableSince) return;
+  if (Date.now() - videoStableSince < 20_000) return;
+  if (videoDrops.length > 0) return;
+  if (activeFps >= MJPEG_FPS_TARGET) return;
+  activeFps = Math.min(MJPEG_FPS_TARGET, activeFps + 5);
+  videoStableSince = Date.now();
+  console.log(`[video] stable — raising mjpeg to ${activeFps}fps`);
+  applyMjpegSettings().catch(() => {});
+}, 10_000);
 
 // ---------- iproxy: tunnel the phone's WDA ports to localhost ----------
 function startTunnel(port) {
@@ -361,7 +445,7 @@ startTunnel(WDA_PORT);
 startTunnel(MJPEG_PORT);
 
 setInterval(probeWda, 3000);
-setInterval(() => { if (!videoConnected) connectVideo(); }, 3000);
+connectVideo();
 
 // ---------- throughput log ----------
 setInterval(() => {

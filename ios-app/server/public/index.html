@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>VoiceOS Connect — Remote Viewer</title>
+<link rel="icon" type="image/png" href="/logo.png" />
 <style>
   :root {
     --bg: #0b0e14;
@@ -146,10 +147,18 @@
     from { transform: scale(0.4); opacity: 0.9; }
     to   { transform: scale(1.6); opacity: 0; }
   }
+  /* Notch mode (?notch=1): chromeless phone-shaped panel that drops out of
+     the notch — just the live screen. The top padding is black-on-black with
+     the physical notch and menu bar, so nothing hides behind them. */
+  body.notch { background: #000; }
+  body.notch header, body.notch footer { display: none; }
+  body.notch main { padding: 44px 6px 10px; }
+  body.notch #screen { border: none; border-radius: 18px; }
 </style>
 </head>
 <body>
 <header>
+  <img src="/logo.png" alt="VoiceOS" style="width:22px;height:22px;border-radius:6px" />
   <h1>VoiceOS Connect</h1>
   <span class="badge"><span id="server-dot" class="dot"></span>Server</span>
   <span class="badge"><span id="phone-dot" class="dot"></span>Phone</span>
@@ -180,6 +189,8 @@
 </footer>
 
 <script>
+if (new URLSearchParams(location.search).has("notch")) document.body.classList.add("notch");
+
 const img = document.getElementById("screen");
 const placeholder = document.getElementById("placeholder");
 const serverDot = document.getElementById("server-dot");
@@ -189,16 +200,21 @@ const fpsEl = document.getElementById("fps");
 let ws = null;
 let frameTimes = [];
 let currentUrl = null;
+let lastFrameAt = 0;
+let blankTimer = null;
 
 function connect() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   ws = new WebSocket(`ws://${location.host}/?role=viewer`);
   ws.binaryType = "blob";
 
   ws.onopen = () => { serverDot.classList.add("on"); };
+  ws.onerror = () => {};
   ws.onclose = () => {
     serverDot.classList.remove("on");
+    // Keep the last frame on screen during brief reconnects — don't flash empty.
     phoneDot.classList.remove("on");
-    setTimeout(connect, 1500);
+    setTimeout(connect, 800);
   };
 
   ws.onmessage = (ev) => {
@@ -208,7 +224,9 @@ function connect() {
       img.src = url;
       img.style.display = "block";
       placeholder.style.display = "none";
-      const now = performance.now();
+      lastFrameAt = performance.now();
+      if (blankTimer) { clearTimeout(blankTimer); blankTimer = null; }
+      const now = lastFrameAt;
       frameTimes.push(now);
       frameTimes = frameTimes.filter((t) => now - t < 2000);
       fpsEl.textContent = (frameTimes.length / 2).toFixed(1) + " fps";
@@ -222,9 +240,20 @@ function connect() {
           controlsEnabled = !!msg.wdaReady;
           document.getElementById("home").disabled = !controlsEnabled;
           document.getElementById("switcher").disabled = !controlsEnabled;
+          // Only blank the UI if video stays down — ignore transient stream flaps.
           if (!msg.phoneConnected) {
-            img.style.display = "none";
-            placeholder.style.display = "block";
+            if (!blankTimer) {
+              blankTimer = setTimeout(() => {
+                if (performance.now() - lastFrameAt > 2500) {
+                  img.style.display = "none";
+                  placeholder.style.display = "block";
+                }
+                blankTimer = null;
+              }, 2500);
+            }
+          } else if (blankTimer) {
+            clearTimeout(blankTimer);
+            blankTimer = null;
           }
         }
       } catch {}
